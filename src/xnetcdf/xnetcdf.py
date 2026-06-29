@@ -560,7 +560,7 @@ class Variable(Mixin, Mixin2):
             case "xarray":
                 # Get the numpy array from the Dask array
                 array = array.values
-
+                
         return array
 
     def __len__(self):
@@ -1891,7 +1891,7 @@ class Dataset(Group):
             are:
 
             =================  ======================  ===================
-            Backend            Library                 Formats
+            Backend            Library                 Dataset formats
             =================  ======================  ===================
             ``'pyfive'``       `pyfive`                netCDF-4
             ``'zarr'``         `zarr`                  Zarr, Kerchunk
