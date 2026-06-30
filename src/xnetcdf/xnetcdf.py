@@ -1878,15 +1878,25 @@ class Dataset(Group):
               passed to `Dataset`.
 
         backend: `None` or (sequence of) `str`, optional
-            Which library or libraries to use for opening a
-            string-like, file-like, or directory-like *dataset*. An
-            attempt to read the dataset is made by the given backends
-            in the order in which they are provided, stopping after
-            the first successful read. Performance may be improved by
-            specifiying a backend library, because it reduces or
-            removes any unsuccessful dataset read attempts, which can
-            be expensive, especially for remote datasets.
+            Which library to use for opening a string-like, file-like,
+            or directory-like dataset. An attempt to read the dataset
+            is made by the given backends in the order in which they
+            are provided, stopping after the first successful
+            read. Performance may be improved by specifiying a backend
+            library, because it reduces or removes any unsuccessful
+            dataset read attempts, which can be expensive, especially
+            for remote datasets.
+    
+            By default *backend* is `None`, which is equivalent to
+            providing the ordered sequence of backends:
+    
+            ``('pyfive', 'zarr' 'ppfive', 'netCDF4', 'netcdf_file',
+            'h5py', 'xarray')``
 
+            If the dataset is given as a backend object, then that
+            backend must be one of the backends identified by the
+            *backend* parameter
+    
             The available backends, and the formats they can read,
             are:
 
@@ -1903,23 +1913,9 @@ class Dataset(Group):
                                                        Zarr, Kerchunk,
                                                        GRIB
             =================  ======================  ===================
-
-            By default *backend* is `None`, which is equivalent to
-            providing the ordered sequence of backends:
-
-            ``('pyfive', 'zarr' 'ppfive', 'netCDF4', 'netcdf_file',
-            'h5py', 'xarray')``
-
-            Note that the `xarray` library also uses other backends to
-            access the dataset, which can be configured via the
-            *xarray_options* parameter.
-
-            If *dataset* is given as (a subclass of) a backend object
-            then *backend* should be `None` or include the name of
-            that backend, otherwise an exception will be raised. For
-            instance, if *dataset* is a `pyfive.File` object then
-            *backend* should be `None`, or the string ``'pyfive'``, or
-            be a sequence that includes the string ``'pyfive'``.
+    
+            Note that the `xarray` library is itself an interface to
+            other backends.
 
             *Example:*
               To only attempt ``'netCDF4'``: ``'netCDF4'`` or
