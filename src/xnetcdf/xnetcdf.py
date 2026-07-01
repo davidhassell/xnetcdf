@@ -1880,25 +1880,25 @@ class Dataset(Group):
               `pyfive.File`, then ``my_pyfive.File`` instances can be
               passed to `Dataset`.
 
-        backend: `None` or (sequence of) `str`, optional
+        backend: `None` or (sequence of) `str`,
             Which library to use for opening a string-like, file-like,
             or directory-like dataset. An attempt to read the dataset
             is made by the given backends in the order in which they
-            are provided, stopping after the first successful
-            read. Performance may be improved by specifiying a backend
-            library, because it reduces or removes any unsuccessful
-            dataset read attempts, which can be expensive, especially
-            for remote datasets.
-
+            are provided, stopping after the first successful read.
             By default *backend* is `None`, which is equivalent to
             providing the ordered sequence of backends:
 
             ``('pyfive', 'zarr' 'ppfive', 'netCDF4', 'netcdf_file',
             'h5py', 'xarray')``
 
-            If the dataset is given as a backend object, then that
-            backend must be one of the backends identified by the
-            *backend* parameter
+            If the dataset is given as a (subclass of a) backend
+            object, then that backend must be one of the backends
+            identified by the *backend* parameter.
+
+            Performance may be improved by specifiying a backend
+            library, as this reduces or removes unsuccessful dataset
+            read attempts, which can be expensive, especially for
+            remote datasets.
 
             The available backends, and the formats they can read,
             are:
@@ -1958,7 +1958,9 @@ class Dataset(Group):
             to `None` (the default) is equivalent to providing an
             empty dictionary. The keyword argument ``mode='r'`` is
             always automatically applied, even when not provided, and
-            can't be set to a different value.
+            can't be set to a different value. The ``filename``
+            argument can not be provided (as the dataset is defined by
+            the *dataset* parameter).
 
         ppfive_options: `dict` or `None`, optional
             Keyword arguments that are passed to `ppfive.File` when
@@ -1966,7 +1968,9 @@ class Dataset(Group):
             to `None` (the default) is equivalent to providing an
             empty dictionary. The keyword argument ``mode='r'`` is
             always automatically applied, even when not provided, and
-            can't be set to a different value.
+            can't be set to a different value. The ``filename``
+            argument can not be provided (as the dataset is defined by
+            the *dataset* parameter).
 
         netCDF4_options: `dict` or `None`, optional
             Keyword arguments that are passed to `netCDF4.Dataset`
@@ -1974,7 +1978,9 @@ class Dataset(Group):
             backend. Setting to `None` (the default) is equivalent to
             providing an empty dictionary. The keyword argument
             ``mode='r'`` is always automatically applied, even when
-            not provided, and can't be set to a different value.
+            not provided, and can't be set to a different value. The
+            ``filename`` argument can not be provided (as the dataset
+            is defined by the *dataset* parameter).
 
         netcdf_file_options: `dict` or `None`, optional
             Keyword arguments that are passed to
@@ -1983,7 +1989,9 @@ class Dataset(Group):
             is equivalent to providing an empty dictionary. The
             keyword arguments ``mode='r'`` and ``mmap=True`` are
             always automatically applied, even when not provided, and
-            can't be set to different values.
+            can't be set to different values. The ``filename``
+            argument can not be provided (as the dataset is defined by
+            the *dataset* parameter).
 
         h5py_options: `dict` or `None`, optional
             Keyword arguments that are passed to `h5py.File` when
@@ -1991,7 +1999,9 @@ class Dataset(Group):
             `None` (the default) is equivalent to providing an empty
             dictionary. The keyword argument ``mode='r'`` is always
             automatically applied, even when not provided, and can't
-            be set to a different value.
+            be set to a different value. The ``name`` argument can not
+            be provided (as the dataset is defined by the *dataset*
+            parameter).
 
             It is recommended to set ``rdcc_nbytes``, ``rdcc_w0``, and
             ``rdcc_nslots`` keywords to reduce the risk of poor HDF5
@@ -2004,11 +2014,13 @@ class Dataset(Group):
             `xarray.open_datatree` when opening a dataset with the
             ``'xarray'`` backend. Setting to `None` (the default) is
             equivalent to providing an empty dictionary. The keyword
-            arguments ``mask_and_scale=False, decode_cf=False,
-            chunks='auto'`` are always automatically applied, even
-            when not provided. The first two arguments can't be set to
-            different values, but the third argument (``chunks``) may
-            be modified.
+            arguments ``mask_and_scale=False``, ``decode_cf=False``,
+            and ``chunks='auto'`` are always automatically applied,
+            even when not provided. The ``mask_and_scale`` and
+            `decode_cf`` arguments can't be set to different values,
+            but ``chunks`` may be redefine. The ``filename_or_obj``
+            argument can not be provided (as the dataset is
+            defined by the *dataset* parameter).
 
         zarr_options: `dict` or `None`, optional
             Keyword arguments that are passed to `zarr.open` when
@@ -2016,7 +2028,9 @@ class Dataset(Group):
             `None` (the default) is equivalent to providing an empty
             dictionary. The keyword argument ``mode='r'`` is always
             automatically applied, even when not provided, and can't
-            be set to a different value.
+            be set to a different value. The ``store`` argument can
+            not be provided (as the dataset is defined by the
+            *dataset* parameter).
 
         zarr_dimension_search: `str`, optional
             How to interpret a Zarr or Kerchunk dataset dimension name
