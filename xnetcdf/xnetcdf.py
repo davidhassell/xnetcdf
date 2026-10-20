@@ -669,6 +669,18 @@ class Variable(Mixin, Mixin2):
         return chunks
 
     @property
+    def data(self):
+        """Return a subspace of the data array defined by indices."""
+        match self.backend_api:          
+            case "xarray":
+                try:
+                    return self._var.data
+                except Exceptions:
+                    pass
+
+        return self[...]
+
+    @property
     def dimension_paths(self):
         """The variable dimension absolute paths.
 
@@ -1126,7 +1138,7 @@ class Variable(Mixin, Mixin2):
             _level=_level,
             _structure=True,
         )
-
+       
 
 class Group(Mixin, Mixin2, Mapping):
     """A netCDF group.
