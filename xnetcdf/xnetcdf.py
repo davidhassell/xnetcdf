@@ -7,6 +7,7 @@ import numpy as np
 from .utils import (
     NetCDFError,
     cdl_format,
+    earthkit_read,
     get_dimensions_from_defining_group,
     h5py_read,
     hdf5_dimension_names,
@@ -32,11 +33,12 @@ from .utils import (
 #
 # Note to developers: If you change the order of this dictionary, or
 #                     add a new key/value pair, you must update the
-#                     `Dataset` docstring.
+#                     `Dataset` docstring. TODO
 _read_functions = {
     "pyfive": pyfive_read,
     "zarr": zarr_read,
     "umfive": umfive_read,
+    "earthkit": earthkit_read,
     "netCDF4": netCDF4_read,
     "netcdf_file": netcdf_file_read,
     "h5py": h5py_read,
@@ -1873,7 +1875,7 @@ class Dataset(Group):
     internally to open a dataset on disk, it always uses
     ``decode_cf=False`` to prevent xarray's CF decoding from
     occurring, thereby removing the need to reverse it.
-    
+
     :Parameters:
 
         dataset:
@@ -1914,8 +1916,8 @@ class Dataset(Group):
             By default *backend* is `None`, which is equivalent to
             providing the ordered sequence of backends:
 
-            ``('pyfive', 'zarr' 'umfive', 'netCDF4', 'netcdf_file',
-            'h5py', 'xarray')``
+            ``('pyfive', 'zarr' 'umfive', 'earthkit', 'netCDF4',
+            'netcdf_file', 'h5py', 'xarray')``
 
             If the dataset is given as a (subclass of a) backend
             object, then that backend must be one of the backends
@@ -1935,6 +1937,7 @@ class Dataset(Group):
             ``'pyfive'``       `pyfive`                netCDF-4
             ``'zarr'``         `zarr`                  Zarr, Kerchunk
             ``'umfive'``       `umfive`                PP, fields file
+            ``'earthkit'``     `earthkit`              GRIB
             ``'netCDF4'``      `netCDF4`               netCDF-4, netCDF-3
             ``'netcdf_file'``  `scipy.io.netcdf_file`  netCDF-3
             ``'h5py'``         `h5py`                  netCDF-4
@@ -1994,6 +1997,12 @@ class Dataset(Group):
             always automatically applied, even when not provided, and
             can't be set to a different value. The ``filename``
             argument can not be provided.
+
+        earthkit_options: `dict` or `None`, optional
+            Keyword arguments that are passed to
+            `earthkit.data.from_source` when opening a dataset with
+            the ``'earthkit'`` backend. Setting to `None` (the
+            default) is equivalent to providing an empty dictionary.
 
         netCDF4_options: `dict` or `None`, optional
             Keyword arguments that are passed to `netCDF4.Dataset`
@@ -2110,6 +2119,7 @@ class Dataset(Group):
         structural_metadata_strategy="minimal",
         pyfive_options=None,
         umfive_options=None,
+        earthkit_options=None,
         h5py_options=None,
         netCDF4_options=None,
         netcdf_file_options=None,
@@ -2131,6 +2141,9 @@ class Dataset(Group):
 
         if umfive_options:
             read_options["umfive"] = umfive_options
+
+        if earthkit_options:
+            read_options["earthkit"] = earthkit_options
 
         if netCDF4_options:
             read_options["netCDF4"] = netCDF4_options

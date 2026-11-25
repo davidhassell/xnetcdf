@@ -1,4 +1,5 @@
 from .utils_cdl import cdl_format
+from .utils_earthkit import earthkit_read
 from .utils_general import (
     NetCDFError,
     get_dimensions_from_defining_group,

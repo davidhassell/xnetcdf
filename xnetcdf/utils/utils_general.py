@@ -293,8 +293,8 @@ def get_dimensions_from_defining_group(variable, dimension_names):
 
         if not found:
             raise NetCDFError(
-                f"Dimension {name!r} not found in the {variable.backend!r} "
-                "group hierarchy."
+                f"Dimension {name!r} not found in the "
+                f"{variable.backend_api!r} API group hierarchy."
             )
 
     return dims

@@ -142,7 +142,6 @@ def xarray_read(dataset, options):
     }
 
 
-
 _CF_ENCODING_KEYS = frozenset({"_FillValue", "missing_value"})
 
 
@@ -164,10 +163,7 @@ def _undecode_cf_dataset(ds):
     """
     import xarray
     from xarray.coding.strings import check_vlen_dtype
-    from xarray.conventions import (
-        _update_bounds_encoding,
-        encode_cf_variable,
-    )
+    from xarray.conventions import _update_bounds_encoding, encode_cf_variable
 
     attrs = dict(ds.attrs)
     coordinates = ds.encoding.get("coordinates")
@@ -243,6 +239,7 @@ def _undecode_cf_dataset(ds):
     }
     return out
 
+
 def xarray_undecode_cf(ds):
     """Reverse any effects of `xarray.decode_cf`.
 
@@ -260,7 +257,7 @@ def xarray_undecode_cf(ds):
                attributes; or those decoded into non-numeric time or
                timedelta objects) will eagerly load those data arrays
                into memory.
-    
+
     :Parameters:
 
         ds: `xarray.Dataset` or `xarray.DataTree`

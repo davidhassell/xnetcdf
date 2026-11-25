@@ -853,6 +853,7 @@ def test_unencode_cf_invalid_type():
     with pytest.raises(TypeError, match="Dataset or xarray.DataTree"):
         xarray_undecode_cf({"not": "a dataset"})  # type: ignore[arg-type]
 
+
 def test_unencode_cf_datatree_subtree(data_dir):
     """unencode_cf on a non-root DataTree node rebases paths to root."""
     test_nc_path = data_dir / "test.nc"
