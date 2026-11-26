@@ -9,8 +9,6 @@ from xnetcdf.utils.grfive.grib_to_cf import LazyTensorArray, _field_meta, grib_t
 _SPATIAL_DIMS = {"latitude", "longitude", "x", "y", "values"}
 _UNIT_SECONDS = {"days": 86400, "hours": 3600, "seconds": 1}
 
-#"/home/david/Downloads/tuv_pl.grib"
-
 
 def _field_index_for_dim(field, dim, coord_vals, coord_attrs):
     """Find the index in *coord_vals* corresponding to *field* along *dim*."""
@@ -53,10 +51,11 @@ def _field_index_for_dim(field, dim, coord_vals, coord_attrs):
 
 @pytest.mark.parametrize("decreasing_atmos_pressure", [True, False])
 def test_lazy_tensor_array_t_matches_individual_fields(
-    decreasing_atmos_pressure
+    data_dir, decreasing_atmos_pressure
 ):
     """Verify LazyTensorArray.__getitem__ matches the individual 't' Fields."""
-    ds = ekd.from_source("file", "/home/david/Downloads/tuv_pl.grib").to_fieldlist()
+    dataset = data_dir / "tuv_pl.grib"
+    ds = ekd.from_source("file", str(dataset)).to_fieldlist()
     t_fields = [
         f
         for f in ds
@@ -130,11 +129,12 @@ def test_lazy_tensor_array_t_matches_individual_fields(
         np.testing.assert_allclose(t_lazy[..., ::-1], expected_full[..., ::-1])
 
 
-def test_lazy_tensor_array_shared_file_lock_and_threads():
+def test_lazy_tensor_array_shared_file_lock_and_threads(data_dir):
     """Arrays from one source share a lock; threaded reads are correct."""
     from concurrent.futures import ThreadPoolExecutor
 
-    ds = ekd.from_source("file", "/home/david/Downloads/tuv_pl.grib").to_fieldlist()
+    dataset = data_dir / "tuv_pl.grib"
+    ds = ekd.from_source("file", str(dataset)).to_fieldlist()
     with grib_to_flat_netcdf_spec(ds) as spec:
         arrays = {
             k: v[1]
@@ -174,8 +174,9 @@ def test_lazy_tensor_array_lock_pickles():
     assert copy._lock is lock._lock
 
 
-def _first_lazy():
-    ds = ekd.from_source("file", "/home/david/Downloads/tuv_pl.grib").to_fieldlist()
+def _first_lazy(data_dir):
+    dataset = data_dir / "tuv_pl.grib"
+    ds = ekd.from_source("file", str(dataset)).to_fieldlist()
     spec = grib_to_flat_netcdf_spec(ds)
     arr = next(
         v[1] for v in spec.data_vars.values() if isinstance(v[1], LazyTensorArray)
@@ -183,8 +184,8 @@ def _first_lazy():
     return spec, arr, np.asarray(arr)
 
 
-def test_lazy_tensor_array_indexing_edge_cases():
-    spec, a, full = _first_lazy()
+def test_lazy_tensor_array_indexing_edge_cases(data_dir):
+    spec, a, full = _first_lazy(data_dir)
     with spec:
         n0 = a.shape[0]
 
@@ -227,8 +228,9 @@ def test_lazy_tensor_array_indexing_edge_cases():
             a[1.5]
 
 
-def test_lazy_tensor_array_indexing_flipped_axis():
-    ds = ekd.from_source("file", "/home/david/Downloads/tuv_pl.grib").to_fieldlist()
+def test_lazy_tensor_array_indexing_flipped_axis(data_dir):
+    dataset = data_dir / "tuv_pl.grib"
+    ds = ekd.from_source("file", str(dataset)).to_fieldlist()
     with grib_to_flat_netcdf_spec(ds, decreasing_atmos_pressure=True) as s2:
         for name, (dims, a2, _) in s2.data_vars.items():
             if not isinstance(a2, LazyTensorArray) or not a2.flip_axes:
