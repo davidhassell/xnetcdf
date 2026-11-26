@@ -22,7 +22,9 @@ from urllib.request import url2pathname
 
 import numpy as np
 
+CF_CONVENTIONS = "CF-1.14"
 CF_CALENDAR = "proleptic_gregorian"
+
 NC_FILL_DOUBLE = np.float64(9.969209968386869e36)
 NC_FILL_INT64 = np.int64(-9223372036854775806)
 
@@ -548,7 +550,7 @@ class LazyTensorArray:
         :Parameters:
 
             axis: `int`
-                Exposed axis index (of length 1) to remove.
+                Exposed axis index (of size 1) to remove.
 
         :Returns:
 
@@ -641,7 +643,7 @@ class LazyTensorArray:
             `tuple` of (`tuple`, `tuple` of `int`) or `numpy.ndarray`
                 ``(raw_key, post_flip_axes)`` ready for
                 ``self.tensor[raw_key]``, or an empty `numpy.ndarray`
-                directly when any slice/index is zero-length.
+                directly when any slice/index is zero length.
 
         """
         if not isinstance(key, tuple):
@@ -816,7 +818,7 @@ class FlatNetCDFSpec:
     :Attributes:
 
         dimensions: dict of {str: int}
-            Mapping of dimension names to their lengths.
+            Mapping of dimension names to their sizes.
 
         coord_vars: dict of {str: tuple of (tuple of `str`, numpy.ndarray, dict)}
             1-d numeric dimension coordinate variables keyed by name,
@@ -943,9 +945,9 @@ def _get_dataset_builder_cls():
             `earthkit.data.xr_engine.builder.SingleDatasetBuilder`.
 
     """
-    # initialize eckit importing `earthkit.data.xr_engine.builder` to
-    # prevent C++ library initialisation order conflicts with
-    # `pyproj`.
+    # initialize eckit before importing
+    # `earthkit.data.xr_engine.builder` to prevent C++ library
+    # initialisation order conflicts with `pyproj`.
     try:
         import eckit  # noqa: #401
     except ImportError:
@@ -1084,7 +1086,7 @@ def _get_dataset_builder_cls():
                     Source-to-target dimension name mapping.
 
                 dimensions: `dict`
-                    Current dimension lengths.
+                    Current dimension sizes.
 
                 all_coords: `dict`
                     Current coordinate entries.
@@ -1127,9 +1129,9 @@ def _get_dataset_builder_cls():
         def _squeeze_singleton_dim(
             dim_name, dimensions, all_coords, data_vars
         ):
-            """Drop a length-1 dimension.
+            """Drop a size 1 dimension.
 
-            Drops a length-1 dimension from ``dimensions``,
+            Drops a size 1 dimension from ``dimensions``,
             ``all_coords``, and ``data_vars``.
 
             :Parameters:
@@ -1138,7 +1140,7 @@ def _get_dataset_builder_cls():
                     Name of the singleton dimension to squeeze.
 
                 dimensions: `dict`
-                    Current dimension lengths.
+                    Current dimension sizes.
 
                 all_coords: `dict`
                     Current coordinate entries.
@@ -2096,7 +2098,7 @@ def _compute_1d_spatial_bounds(name, arr):
             ``[-90, 90]``).
 
         arr: `numpy.ndarray`
-            1-d numeric coordinate array of length at least 2.
+            1-d numeric coordinate array of size at least 2.
 
     :Returns:
 
@@ -2646,7 +2648,7 @@ def _apply_cf_polish(
         global_attrs.pop("levtype", None)
         global_attrs.pop("level_type", None)
 
-    global_attrs.setdefault("Conventions", "CF-1.14")
+    global_attrs.setdefault("Conventions", CF_CONVENTIONS)
 
     return FlatNetCDFSpec(
         dimensions=polished_dimensions,
@@ -2709,7 +2711,7 @@ def grib_to_flat_netcdf_spec(
             their coordinates to scalar entries in
             ``aux_vars``. Horizontal grid dimensions (e.g.
             ``latitude``, ``longitude``, ``x``, ``y``, ``values``) are
-            never squeezed, even when of length 1. If ``None``
+            never squeezed, even when of size 1. If ``None``
             (default), resolves to False for the ``"earthkit"``
             profile and True otherwise (e.g.  for ``"grib"`` and
             ``"mars"``). Singleton ``level_type`` / ``levtype``
@@ -2737,7 +2739,7 @@ def grib_to_flat_netcdf_spec(
         `FlatNetCDFSpec`
             Immutable specification containing:
 
-            * ``dimensions``: mapping of dimension names to lengths.
+            * ``dimensions``: mapping of dimension names to sizes.
             * ``coord_vars``: 1-d numeric dimension coordinates as
               ``(dims, ndarray, attrs)``.
             * ``data_vars``: data variables as ``(dims, array_like,

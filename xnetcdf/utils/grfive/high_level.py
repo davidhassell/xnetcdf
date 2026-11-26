@@ -31,8 +31,8 @@ class File(Mapping):
 
     :Interoperability:
 
-    This class is has enough of the `pyfive` API to allow us to use
-    the ``'pyfive'`` backed API route through `xnetcdf.Dataset`.
+    This class has enough of the `pyfive` API to allow it to be used
+    with the ``'pyfive'`` backed API route through `xnetcdf.Dataset`.
 
     :Initialisation:
 
