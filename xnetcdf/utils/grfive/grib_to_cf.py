@@ -47,6 +47,7 @@ from .grib_time import _is_datetime_values, _is_timedelta_values
 from .grib_utils import (  # noqa: F401
     FlatNetCDFSpec,
     _field_meta,
+    _grid_type,
     _is_time_units,
     _unique_name,
 )
@@ -1604,7 +1605,7 @@ def grib_to_flat_netcdf_spec(
         calendar=calendar,
         decreasing_atmos_pressure=decreasing_atmos_pressure,
         horizontal_bounds=(
-            _field_meta(ds[0], "gridType") in _MIDPOINT_BOUNDS_GRID_TYPES
+            _grid_type(ds[0]) in _MIDPOINT_BOUNDS_GRID_TYPES
         ),
     )
     return _apply_grid_mapping(spec, ds)

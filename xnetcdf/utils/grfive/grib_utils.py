@@ -93,6 +93,23 @@ def _field_meta(field, key):
         pass
 
 
+def _grid_type(field):
+    """Return the grid type of an `earthkit.data` field.
+
+    Uses `earthkit`'s parsed ``field.geography.grid_type()``, falling
+    back to the GRIB ``gridType`` key.
+
+    :Returns:
+
+        `str` or `None`
+
+    """
+    try:
+        return field.geography.grid_type()
+    except Exception:
+        return _field_meta(field, "gridType")
+
+
 @dataclass(frozen=True, slots=True)
 class FlatNetCDFSpec:
     """Flat, CF compliant representation of a netCDF-style dataset.

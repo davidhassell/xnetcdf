@@ -5,7 +5,7 @@ from __future__ import annotations
 import numpy as np
 
 from .grib_polish import (_build_cell_bounds)
-from .grib_utils import (FlatNetCDFSpec, _field_meta, _unique_name)
+from .grib_utils import (FlatNetCDFSpec, _field_meta, _unique_name, _grid_type)
 
 
 _ROTATED_LL_GRID_MAPPING_NAME = "rotated_latitude_longitude"
@@ -193,7 +193,7 @@ def _projected_grid_definition(field):
             `None` if the grid is not supported.
 
     """
-    grid_type = _field_meta(field, "gridType")
+    grid_type = _grid_type(field)
     earth = _grib_earth_shape(field)
     if earth is None:
         return
@@ -558,7 +558,7 @@ def _apply_grid_mapping(spec, ds):
 
     """
     field = ds[0]
-    grid_type = _field_meta(field, "gridType")
+    grid_type = _grid_type(field)
     if grid_type == "healpix":
         return _apply_healpix_grid_mapping(spec, field)
 
