@@ -785,3 +785,52 @@ def test_grib_coordinates_named_after_standard_names(data_dir, tmp_path):
         assert "level" not in spec.aux_vars
         assert spec.aux_vars["height"][2]["axis"] == "Z"
         assert "height" in spec.data_vars["z"][2]["coordinates"].split()
+
+
+def test_grib_valid_time_coordinate(data_dir, tmp_path):
+    """`time` is reference time plus step, with matching bounds."""
+    path = _write_modified(
+        tmp_path,
+        data_dir / "polar_stereographic_12x10.grib1",
+        "accum.grib",
+        [
+            [("stepType", "accum"), ("startStep", 0), ("endStep", e)]
+            for e in (6, 12)
+        ],
+    )
+    with grib_to_flat_netcdf_spec(str(path)) as spec:
+        dims, arr, attrs = spec.aux_vars["time"]
+        frt = spec.aux_vars["forecast_reference_time"][1]
+        assert dims == ("step",)
+        np.testing.assert_allclose(arr, frt + np.array([6, 12]))
+        assert attrs["standard_name"] == "time"
+        assert attrs["bounds"] == "time_bnds"
+        np.testing.assert_allclose(
+            spec.aux_vars["time_bnds"][1], np.column_stack([arr - [6, 12], arr])
+        )
+        (vname,) = spec.data_vars
+        assert spec.data_vars[vname][2]["cell_methods"] == "time: sum"
+
+
+def test_grib_conflicting_step_intervals_give_no_bounds(data_dir, tmp_path):
+    """Fields ending at one step but starting at different ones."""
+    path = _write_modified(
+        tmp_path,
+        data_dir / "polar_stereographic_12x10.grib1",
+        "conflict.grib",
+        [
+            [
+                ("shortName", name),
+                ("stepType", "accum"),
+                ("startStep", start),
+                ("endStep", 6),
+            ]
+            for name, start in (("2t", 0), ("tp", 3))
+        ],
+    )
+    with pytest.warns(UserWarning, match="different start steps"):
+        spec = grib_to_flat_netcdf_spec(str(path))
+
+    assert "bounds" not in spec.aux_vars["step"][2]
+    assert "time_bnds" not in spec.aux_vars
+    spec.close()

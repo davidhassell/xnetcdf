@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime
+import warnings
 import numpy as np
 
 from .grib_constants import (CF_CALENDAR, CF_CONVENTIONS, _HORIZONTAL_1D_BOUNDS_NAMES, _LATITUDE_LIKE_NAMES, _LEVEL_TYPE_NAMES, _NUMERIC_DTYPE_KINDS, _PRESSURE_UNITS, _VERTICAL_NAMES)
@@ -233,6 +234,72 @@ def _compute_1d_spatial_bounds(name, arr):
     )
 
 
+def _add_valid_time(coord_vars, aux_vars):
+    """Add a CF ``time`` auxiliary coordinate for the validity time.
+
+    The validity time is the forecast reference time plus the step. It
+    is only created if both are numeric time coordinates, and there is
+    not already a ``time`` or ``valid_time``. The forecast reference
+    time loses any ``axis`` attribute, so that ``time`` is the only T
+    axis.
+
+    :Parameters:
+
+        coord_vars: `dict`
+            Polished 1-d dimension coordinates.
+
+        aux_vars: `dict`
+            Polished auxiliary coordinates.
+
+    :Returns:
+
+        `None`
+            ``aux_vars`` is updated in place.
+
+    """
+    both = {**aux_vars, **coord_vars}
+    if "time" in both or "valid_time" in both:
+        return
+
+    frt = both.get("forecast_reference_time")
+    step = both.get("step")
+    if frt is None or step is None:
+        return
+
+    f_dims, f_arr, f_attrs = frt
+    s_dims, s_arr, s_attrs = step
+    f_scale = _cf_unit_scale_seconds(f_attrs.get("units"))
+    s_scale = _cf_unit_scale_seconds(s_attrs.get("units"))
+    if (
+        f_scale is None
+        or s_scale is None
+        or f_arr.dtype.kind not in _NUMERIC_DTYPE_KINDS
+        or s_arr.dtype.kind not in _NUMERIC_DTYPE_KINDS
+    ):
+        return
+
+    t_dims = (*f_dims, *(d for d in s_dims if d not in f_dims))
+    f_shape = [f_arr.shape[f_dims.index(d)] if d in f_dims else 1 for d in t_dims]
+    s_shape = [s_arr.shape[s_dims.index(d)] if d in s_dims else 1 for d in t_dims]
+    if [d for d in t_dims if d in s_dims] != list(s_dims):
+        return
+
+    t_arr = f_arr.astype(np.float64).reshape(f_shape) + (
+        s_arr.astype(np.float64).reshape(s_shape) * (s_scale / f_scale)
+    )
+    t_attrs = {
+        "standard_name": "time",
+        "long_name": "time",
+        "units": f_attrs["units"],
+        "axis": "T",
+    }
+    if "calendar" in f_attrs:
+        t_attrs["calendar"] = f_attrs["calendar"]
+
+    f_attrs.pop("axis", None)
+    aux_vars["time"] = (t_dims, t_arr, t_attrs)
+
+
 def _build_cell_bounds(
     dimensions,
     coord_vars,
@@ -338,6 +405,7 @@ def _build_cell_bounds(
             step_container = None
 
         duration_by_step_idx: np.ndarray | None = None
+        ambiguous = False
 
         if step_container is not None:
             sdims, sarr, sattrs = step_container["step"]
@@ -351,7 +419,12 @@ def _build_cell_bounds(
                     e_sec = int(round(float(val) * s_scale))
                     # A step with no interval (e.g. step 0 of an
                     # accumulation) has zero length
-                    s_sec, _ = step_intervals_s.get(e_sec, (e_sec, e_sec))
+                    interval = step_intervals_s.get(e_sec, (e_sec, e_sec))
+                    if interval is None:
+                        ambiguous = True
+                        break
+
+                    s_sec = interval[0]
                     if sarr.dtype.kind == "f":
                         starts[idx] = s_sec / s_scale
                     else:
@@ -360,7 +433,14 @@ def _build_cell_bounds(
                     ends[idx] = val
                     durations[idx] = float(e_sec - s_sec)
 
-                if s_flat.size:
+                if ambiguous:
+                    warnings.warn(
+                        "GRIB fields ending at the same forecast step "
+                        "have different start steps, so no step or "
+                        "time bounds are created.",
+                        stacklevel=2,
+                    )
+                elif s_flat.size:
                     bnds_arr = np.column_stack([starts, ends]).reshape(
                         (*sarr.shape, 2)
                     )
@@ -370,6 +450,9 @@ def _build_cell_bounds(
         # Propagate interval durations to valid_time (or time if no
         # step coord exists)
         for tname in ("valid_time", "time"):
+            if ambiguous:
+                break
+
             if tname in coord_vars:
                 tcontainer = coord_vars
             elif tname in aux_vars:
@@ -387,14 +470,27 @@ def _build_cell_bounds(
 
             if duration_by_step_idx is not None and step_container is not None:
                 sdims = step_container["step"][0]
-                if sdims == tdims and duration_by_step_idx.shape == tarr.shape:
-                    dur_in_t_units = duration_by_step_idx / t_scale
-                    t_bnds = np.stack([tarr - dur_in_t_units, tarr], axis=-1)
+                # The step dimensions must appear in order in the
+                # time dimensions, which may include others (e.g. the
+                # forecast reference time)
+                it = iter(tdims)
+                if all(d in it for d in sdims):
+                    shape = [
+                        dimensions[d] if d in sdims else 1 for d in tdims
+                    ]
+                    dur = duration_by_step_idx.reshape(shape) / t_scale
+                    t_bnds = np.stack(
+                        [tarr - dur, tarr + np.zeros_like(dur)], axis=-1
+                    )
                     _register_bnds(tcontainer, tname, t_bnds)
                     break
 
             elif len(step_intervals_s) == 1:
-                s_sec, e_sec = next(iter(step_intervals_s.values()))
+                interval = next(iter(step_intervals_s.values()))
+                if interval is None:
+                    continue
+
+                s_sec, e_sec = interval
                 dur_in_t_units = float(e_sec - s_sec) / t_scale
                 t_bnds = np.stack([tarr - dur_in_t_units, tarr], axis=-1)
                 _register_bnds(tcontainer, tname, t_bnds)
@@ -669,6 +765,8 @@ def _apply_cf_polish(
         del polished_aux_vars[lt_key]
         for vname, (vdims, data, attrs) in cleaned_data_vars.items():
             attrs.setdefault("level_type", lt_val)
+
+    _add_valid_time(polished_coord_vars, polished_aux_vars)
 
     polished_dimensions, bnds_vars, bnds_names = _build_cell_bounds(
         dimensions,

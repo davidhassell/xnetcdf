@@ -356,7 +356,8 @@ def _extract_grib_interval_hints(ds):
 
         (`dict`, `dict`)
             ``(step_intervals_s, level_intervals)`` mapping end-step
-            seconds to ``(start_seconds, end_seconds)`` and level
+            seconds to ``(start_seconds, end_seconds)`` (or `None` if
+            fields disagree on the start) and level
             coordinate values to ``(top_level, bottom_level)``.
 
     """
@@ -392,7 +393,11 @@ def _extract_grib_interval_hints(ds):
 
                 e_sec = int(round(e_val * scale))
                 s_sec = int(round(s_val * scale))
-                step_intervals_s.setdefault(e_sec, (s_sec, e_sec))
+                interval = (s_sec, e_sec)
+                if step_intervals_s.setdefault(e_sec, interval) != interval:
+                    # Fields ending at the same step but starting at
+                    # different steps can not share step bounds
+                    step_intervals_s[e_sec] = None
 
         top_lvl = _field_meta(fld, "topLevel")
         bot_lvl = _field_meta(fld, "bottomLevel")
