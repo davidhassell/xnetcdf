@@ -4,7 +4,12 @@ import earthkit.data as ekd
 import numpy as np
 import pytest
 
-from xnetcdf.utils.grfive.grib_to_cf import LazyTensorArray, _field_meta, grib_to_flat_netcdf_spec
+from xnetcdf.utils.grfive.grib_to_cf import (
+    LazyTensorArray,
+    _field_meta,
+    _projected_grid_definition,
+    grib_to_flat_netcdf_spec,
+)
 
 _SPATIAL_DIMS = {"latitude", "longitude", "x", "y", "values"}
 _UNIT_SECONDS = {"days": 86400, "hours": 3600, "seconds": 1}
@@ -404,17 +409,15 @@ def test_rotated_ll_grid_mapping(data_dir):
     ],
 )
 def test_projected_grids_read(data_dir, name):
-    """Projected grids give lazy (y, x) data with 2-d lat/lon."""
+    """Projected grids give lazy (y, x) data with a grid mapping."""
     dataset = data_dir / name
     ds = ekd.from_source("file", str(dataset)).to_fieldlist()
     with grib_to_flat_netcdf_spec(ds) as spec:
         assert spec.dimensions["y"] == 10
         assert spec.dimensions["x"] == 12
-        assert spec.aux_vars["latitude"][0] == ("y", "x")
-        assert spec.aux_vars["longitude"][0] == ("y", "x")
         (dims, lazy, attrs), = spec.data_vars.values()
         assert dims == ("y", "x")
-        assert "grid_mapping" not in attrs
+        assert "grid_mapping" in attrs
         np.testing.assert_allclose(np.asarray(lazy), ds[0].to_numpy())
 
 
@@ -494,3 +497,87 @@ def test_horizontal_bounds_only_where_midpoints_are_valid(data_dir):
         ds = ekd.from_source("file", str(data_dir / name)).to_fieldlist()
         with grib_to_flat_netcdf_spec(ds) as spec:
             assert ("latitude_bnds" in spec.aux_vars) is expected
+
+
+def test_healpix_grid_mapping(data_dir):
+    """HEALPix gets a CF grid mapping and no computed lat/lon."""
+    spec = grib_to_flat_netcdf_spec(str(data_dir / "healpix_H8.grib2"))
+    assert "latitude" not in spec.aux_vars
+    assert "longitude" not in spec.aux_vars
+    attrs = spec.aux_vars["healpix"][2]
+    assert attrs == {
+        "grid_mapping_name": "healpix",
+        "indexing_scheme": "ring",
+        "refinement_level": 3,
+    }
+    assert spec.dimensions["healpix_index"] == 12 * 8**2
+    idx = spec.coord_vars["healpix_index"]
+    assert idx[0] == ("healpix_index",)
+    assert idx[2]["standard_name"] == "healpix_index"
+    np.testing.assert_array_equal(idx[1], np.arange(768))
+    for _, _, a in spec.data_vars.values():
+        assert a["grid_mapping"] == "healpix"
+        assert "latitude" not in a["coordinates"].split()
+    assert not any(n.endswith("bnds") for n in spec.aux_vars)
+
+
+def test_reduced_rotated_gg_grid_mapping(data_dir):
+    """Reduced rotated Gaussian: mapping only, no coords or bounds."""
+    spec = grib_to_flat_netcdf_spec(
+        str(data_dir / "rotated_N32_subarea.grib")
+    )
+    attrs = spec.aux_vars["rotated_latitude_longitude"][2]
+    assert attrs["grid_north_pole_latitude"] == 22.0
+    assert attrs["grid_north_pole_longitude"] == 140.0
+    assert "latitude" not in spec.aux_vars
+    assert "grid_latitude" not in spec.coord_vars
+    assert not any(n.endswith("bnds") for n in spec.aux_vars)
+    for _, _, a in spec.data_vars.values():
+        assert a["grid_mapping"] == "rotated_latitude_longitude"
+
+
+@pytest.mark.parametrize(
+    "name, gm_name",
+    [
+        ("lambert_12x10.grib1", "lambert_conformal_conic"),
+        (
+            "lambert_azimuthal_equal_area_12x10.grib2",
+            "lambert_azimuthal_equal_area",
+        ),
+        ("polar_stereographic_12x10.grib1", "polar_stereographic"),
+    ],
+)
+def test_projected_grid_mapping(data_dir, name, gm_name):
+    """Projected grids get x/y coordinates with bounds and a mapping."""
+    pyproj = pytest.importorskip("pyproj")
+
+    dataset = data_dir / name
+    field = ekd.from_source("file", str(dataset)).to_fieldlist()[0]
+    spec = grib_to_flat_netcdf_spec(str(dataset))
+
+    assert "latitude" not in spec.aux_vars
+    assert "longitude" not in spec.aux_vars
+    gm = spec.aux_vars[gm_name][2]
+    assert gm["grid_mapping_name"] == gm_name
+
+    y, x = spec.coord_vars["y"], spec.coord_vars["x"]
+    assert y[2]["standard_name"] == "projection_y_coordinate"
+    assert x[2]["standard_name"] == "projection_x_coordinate"
+    assert spec.aux_vars[x[2]["bounds"]][1].shape == (12, 2)
+    assert spec.aux_vars[y[2]["bounds"]][1].shape == (10, 2)
+
+    for _, _, a in spec.data_vars.values():
+        assert a["grid_mapping"] == gm_name
+        assert "latitude" not in a.get("coordinates", "").split()
+
+    # The coordinates reproduce earthkit's computed lat/lon
+    _, proj = _projected_grid_definition(field)
+    crs = pyproj.CRS.from_proj4(proj)
+    t = pyproj.Transformer.from_crs(crs, crs.geodetic_crs, always_xy=True)
+    X, Y = np.meshgrid(x[1], y[1])
+    lon, lat = t.transform(X, Y)
+    np.testing.assert_allclose(
+        lat, field.geography.latitudes().reshape(lat.shape), atol=1e-6
+    )
+    dlon = (lon - field.geography.longitudes().reshape(lon.shape) + 180) % 360
+    np.testing.assert_allclose(dlon - 180, 0, atol=1e-6)
