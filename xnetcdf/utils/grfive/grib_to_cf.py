@@ -3029,6 +3029,7 @@ def _grib_earth_shape(field):
 
 # GRIB grid types that are supported as CF projected grids
 _PROJECTED_GRID_TYPES = {
+    "mercator",
     "lambert",
     "lambert_azimuthal_equal_area",
     "polar_stereographic",
@@ -3102,6 +3103,17 @@ def _projected_grid_definition(field):
             "standard_parallel": lad,
         }
         proj = f"+proj=stere +lat_0={pole!r} +lat_ts={lad!r} +lon_0={orient!r}"
+    elif grid_type == "mercator":
+        lad, lon0 = get("LaDInDegrees"), get("orientationOfTheGridInDegrees")
+        if None in (lad, lon0):
+            return
+
+        attrs = {
+            "grid_mapping_name": "mercator",
+            "standard_parallel": lad,
+            "longitude_of_projection_origin": lon0,
+        }
+        proj = f"+proj=merc +lat_0=0 +lat_ts={lad!r} +lon_0={lon0!r}"
     else:
         return
 
@@ -3130,8 +3142,14 @@ def _projected_coordinates(field, proj, ny, nx):
         float(_field_meta(field, "longitudeOfFirstGridPointInDegrees")),
         float(_field_meta(field, "latitudeOfFirstGridPointInDegrees")),
     )
-    dx = float(_field_meta(field, "DxInMetres"))
-    dy = float(_field_meta(field, "DyInMetres"))
+    # Mercator grids use Di/Dj instead of Dx/Dy
+    dx = _field_meta(field, "DxInMetres")
+    dy = _field_meta(field, "DyInMetres")
+    if dx is None or dy is None:
+        dx = _field_meta(field, "DiInMetres")
+        dy = _field_meta(field, "DjInMetres")
+
+    dx, dy = float(dx), float(dy)
     if _field_meta(field, "iScansNegatively"):
         dx = -dx
 
@@ -3155,20 +3173,45 @@ def _apply_projected_grid_mapping(spec, field):
         return spec
 
     gm_attrs, proj = definition
+
+    # The computed lat/lon are either 2-d auxiliary coordinates, or
+    # 1-d coordinate variables (in which case their dimensions, named
+    # after them, are renamed to "y" and "x")
     lat_dims = spec.aux_vars.get("latitude", ((),))[0]
     lon_dims = spec.aux_vars.get("longitude", ((),))[0]
-    if len(lat_dims) != 2 or lat_dims != lon_dims:
+    if len(lat_dims) == 2 and lat_dims == lon_dims:
+        ydim, xdim = lat_dims
+    elif (
+        spec.coord_vars.get("latitude", ((),))[0] == ("latitude",)
+        and spec.coord_vars.get("longitude", ((),))[0] == ("longitude",)
+    ):
+        ydim, xdim = "y", "x"
+        if {ydim, xdim} & {
+            *spec.dimensions,
+            *spec.coord_vars,
+            *spec.aux_vars,
+            *spec.data_vars,
+        }:
+            return spec
+    else:
         return spec
 
-    ydim, xdim = lat_dims
-    if "x" in spec.coord_vars or "y" in spec.coord_vars:
-        return spec
+    if (ydim, xdim) == lat_dims:
+        ny, nx = spec.dimensions[ydim], spec.dimensions[xdim]
+        if "x" in spec.coord_vars or "y" in spec.coord_vars:
+            return spec
+    else:
+        ny, nx = spec.dimensions["latitude"], spec.dimensions["longitude"]
 
-    coords = _projected_coordinates(
-        field, proj, spec.dimensions[ydim], spec.dimensions[xdim]
-    )
+    coords = _projected_coordinates(field, proj, ny, nx)
     if coords is None:
         return spec
+
+    rename = {"latitude": ydim, "longitude": xdim}
+
+    def _rename(dims):
+        return tuple(rename.get(d, d) if (ydim, xdim) != lat_dims else d
+                     for d in dims)
 
     y, x = coords
     gm_name = _unique_name(
@@ -3196,17 +3239,22 @@ def _apply_projected_grid_mapping(spec, field):
                 "axis": "X",
             },
         ),
-        **spec.coord_vars,
+        **{
+            k: (_rename(d), v, a)
+            for k, (d, v, a) in spec.coord_vars.items()
+            if k not in ("latitude", "longitude")
+        },
     }
     aux_vars = {
-        k: v
-        for k, v in spec.aux_vars.items()
+        k: (_rename(d), v, a)
+        for k, (d, v, a) in spec.aux_vars.items()
         if k not in ("latitude", "longitude")
     }
     aux_vars[gm_name] = ((), np.array(0, dtype="i4"), gm_attrs)
 
     data_vars = {}
     for k, (d, v, a) in spec.data_vars.items():
+        d = _rename(d)
         a = dict(a)
         if {ydim, xdim}.issubset(d):
             a["grid_mapping"] = gm_name
@@ -3224,7 +3272,11 @@ def _apply_projected_grid_mapping(spec, field):
         data_vars[k] = (d, v, a)
 
     dimensions, bnds_vars, _ = _build_cell_bounds(
-        dict(spec.dimensions), coord_vars, aux_vars, None
+        {rename.get(d, d) if (ydim, xdim) != lat_dims else d: n
+         for d, n in spec.dimensions.items()},
+        coord_vars,
+        aux_vars,
+        None,
     )
     aux_vars.update(bnds_vars)
 

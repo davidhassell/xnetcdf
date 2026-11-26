@@ -545,6 +545,7 @@ def test_reduced_rotated_gg_grid_mapping(data_dir):
             "lambert_azimuthal_equal_area",
         ),
         ("polar_stereographic_12x10.grib1", "polar_stereographic"),
+        ("mercator.grib", "mercator"),
     ],
 )
 def test_projected_grid_mapping(data_dir, name, gm_name):
@@ -563,8 +564,10 @@ def test_projected_grid_mapping(data_dir, name, gm_name):
     y, x = spec.coord_vars["y"], spec.coord_vars["x"]
     assert y[2]["standard_name"] == "projection_y_coordinate"
     assert x[2]["standard_name"] == "projection_x_coordinate"
-    assert spec.aux_vars[x[2]["bounds"]][1].shape == (12, 2)
-    assert spec.aux_vars[y[2]["bounds"]][1].shape == (10, 2)
+    assert spec.aux_vars[x[2]["bounds"]][1].shape == (x[1].size, 2)
+    assert spec.aux_vars[y[2]["bounds"]][1].shape == (y[1].size, 2)
+    assert spec.dimensions["x"] == x[1].size
+    assert spec.dimensions["y"] == y[1].size
 
     for _, _, a in spec.data_vars.values():
         assert a["grid_mapping"] == gm_name
