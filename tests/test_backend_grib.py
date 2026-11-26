@@ -711,3 +711,36 @@ def test_grib_dropped_fields_raise(data_dir, tmp_path):
 
     with grib_to_flat_netcdf_spec(str(path), profile="grib") as spec:
         assert spec.data_vars["t"][0] == ("level", "y", "x")
+
+
+def test_grib_single_height_gets_scalar_coordinate(data_dir):
+    """2 metre fields get a scalar height coordinate."""
+    with grib_to_flat_netcdf_spec(
+        str(data_dir / "lambert_12x10.grib1")
+    ) as spec:
+        _, _, attrs = spec.data_vars["2t"]
+        assert "height" in attrs["coordinates"].split()
+        dims, value, hattrs = spec.aux_vars["height"]
+        assert dims == ()
+        assert value == 2
+        assert hattrs["units"] == "m"
+        assert hattrs["positive"] == "up"
+
+
+def test_grib1_soil_depth_units_are_cm(data_dir, tmp_path):
+    """GRIB1 soil depths are in cm, not the m that earthkit assumes."""
+    path = _write_modified(
+        tmp_path,
+        data_dir / "lambert_12x10.grib1",
+        "soil.grib",
+        [
+            [
+                ("indicatorOfTypeOfLevel", 112),
+                ("topLevel", top),
+                ("bottomLevel", bottom),
+            ]
+            for top, bottom in ((0, 7), (7, 28))
+        ],
+    )
+    with grib_to_flat_netcdf_spec(str(path), profile="grib") as spec:
+        assert spec.coord_vars["level"][2]["units"] == "cm"

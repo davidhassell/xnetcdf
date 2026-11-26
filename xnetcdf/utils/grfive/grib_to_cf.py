@@ -1488,6 +1488,94 @@ def _get_dataset_builder_cls():
     return FlatNetCDFDatasetBuilder
 
 
+def _apply_vertical_fixes(spec, ds):
+    """Fix up vertical coordinates that `earthkit` leaves wrong or out.
+
+    * GRIB1 soil depths are in centimetres, but `earthkit` labels
+      them as metres.
+
+    * A variable with no vertical coordinate whose fields are all at
+      one height above the ground (e.g. 2 metre temperature) gets a
+      scalar ``height`` coordinate, since it can't have more than one
+      level.
+
+    :Parameters:
+
+        spec: `FlatNetCDFSpec`
+            The CF normalised specification, modified in place.
+
+        ds: `earthkit.data.FieldList`
+            The source of *spec*.
+
+    :Returns:
+
+        `FlatNetCDFSpec`
+            The modified *spec*.
+
+    """
+    # GRIB1 depths below the land surface
+    if len(ds) and _field_meta(ds[0], "edition") == 1:
+        for container in (spec.coord_vars, spec.aux_vars):
+            for cname, (_, _, cattrs) in container.items():
+                if (
+                    cattrs.get("standard_name") == "depth"
+                    and cattrs.get("units") == "m"
+                    and "soil" in str(cattrs.get("long_name", ""))
+                ):
+                    cattrs["units"] = "cm"
+
+    # Scalar height coordinates for single height level variables
+    used = set(spec.dimensions) | set(spec.coord_vars) | set(spec.aux_vars)
+    used |= set(spec.data_vars)
+    for vname, (vdims, data, attrs) in spec.data_vars.items():
+        tensor = getattr(data, "tensor", None)
+        if tensor is None:
+            continue
+
+        if any(
+            coord_attrs.get("axis") == "Z"
+            for cname, (_, _, coord_attrs) in {
+                **spec.coord_vars,
+                **spec.aux_vars,
+            }.items()
+            if cname in vdims or cname in attrs.get("coordinates", "").split()
+        ):
+            continue
+
+        try:
+            fields = [tensor.source[0], tensor.source[-1]]
+            vertical = [f.vertical for f in fields]
+            level_types = {v.level_type() for v in vertical}
+            levels = {v.level() for v in vertical}
+            units = vertical[0].units()
+        except Exception:
+            continue
+
+        if (
+            level_types != {"height_above_ground_level"}
+            or len(levels) != 1
+            or None in levels
+        ):
+            continue
+
+        hname = _unique_name("height", used)
+        spec.aux_vars[hname] = (
+            (),
+            np.array(levels.pop()),
+            {
+                "standard_name": "height",
+                "long_name": "height above the surface",
+                "units": "m" if str(units) == "meter" else str(units),
+                "positive": "up",
+                "axis": "Z",
+            },
+        )
+        coordinates = attrs.get("coordinates", "").split()
+        attrs["coordinates"] = " ".join([*coordinates, hname])
+
+    return spec
+
+
 def grib_to_flat_netcdf_spec(
     ds,
     profile="auto",
@@ -1639,4 +1727,5 @@ def grib_to_flat_netcdf_spec(
             _grid_type(ds[0]) in _MIDPOINT_BOUNDS_GRID_TYPES
         ),
     )
+    spec = _apply_vertical_fixes(spec, ds)
     return _apply_grid_mapping(spec, ds)
