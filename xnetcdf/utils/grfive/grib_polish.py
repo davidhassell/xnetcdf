@@ -63,6 +63,14 @@ def _apply_vertical_attrs(name, attrs):
         return
 
     attrs.setdefault("axis", "Z")
+    if (
+        attrs.get("standard_name")
+        == "atmosphere_hybrid_sigma_pressure_coordinate"
+    ):
+        # GRIB gives model level numbers, not the dimensionless
+        # coordinate (which needs formula_terms) that this name implies
+        del attrs["standard_name"]
+
     units_lower = str(attrs.get("units", "")).lower()
     lt_lower = str(attrs.get("level_type", "")).lower()
     name_lower = name.lower()
@@ -339,15 +347,11 @@ def _build_cell_bounds(
                 starts = np.empty(s_flat.size, dtype=sarr.dtype)
                 ends = np.empty(s_flat.size, dtype=sarr.dtype)
                 durations = np.zeros(s_flat.size, dtype=np.float64)
-                matched_all = s_flat.size > 0
                 for idx, val in enumerate(s_flat):
                     e_sec = int(round(float(val) * s_scale))
-                    interval = step_intervals_s.get(e_sec)
-                    if interval is None:
-                        matched_all = False
-                        break
-
-                    s_sec, _ = interval
+                    # A step with no interval (e.g. step 0 of an
+                    # accumulation) has zero length
+                    s_sec, _ = step_intervals_s.get(e_sec, (e_sec, e_sec))
                     if sarr.dtype.kind == "f":
                         starts[idx] = s_sec / s_scale
                     else:
@@ -356,7 +360,7 @@ def _build_cell_bounds(
                     ends[idx] = val
                     durations[idx] = float(e_sec - s_sec)
 
-                if matched_all:
+                if s_flat.size:
                     bnds_arr = np.column_stack([starts, ends]).reshape(
                         (*sarr.shape, 2)
                     )

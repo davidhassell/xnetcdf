@@ -636,3 +636,78 @@ def test_grib_missing_points_use_fill_value(data_dir):
     assert (arr == fill).sum() == 120
     assert "point" not in attrs.get("cell_methods", "")
     spec.close()
+
+
+def _write_modified(tmp_path, src, name, edits_list):
+    """Write copies of the first message of *src* with edited keys."""
+    import eccodes
+
+    out = tmp_path / name
+    with open(src, "rb") as f:
+        handle = eccodes.codes_grib_new_from_file(f)
+
+    with open(out, "wb") as o:
+        for edits in edits_list:
+            clone = eccodes.codes_clone(handle)
+            for key, value in edits:
+                eccodes.codes_set(clone, key, value)
+
+            eccodes.codes_write(clone, o)
+            eccodes.codes_release(clone)
+
+    eccodes.codes_release(handle)
+    return out
+
+
+def test_grib_step_bounds_with_zero_length_step(data_dir, tmp_path):
+    """Accumulations starting at step 0 still get step bounds."""
+    path = _write_modified(
+        tmp_path,
+        data_dir / "polar_stereographic_12x10.grib1",
+        "accum.grib",
+        [
+            [("stepType", "accum"), ("startStep", 0), ("endStep", e)]
+            for e in (0, 6, 12)
+        ],
+    )
+    with grib_to_flat_netcdf_spec(str(path)) as spec:
+        assert spec.coord_vars["step"][2]["bounds"] == "step_bnds"
+        np.testing.assert_array_equal(
+            spec.aux_vars["step_bnds"][1], [[0, 0], [0, 6], [0, 12]]
+        )
+
+
+def test_grib_hybrid_level_has_no_hybrid_standard_name(data_dir, tmp_path):
+    """Model level numbers don't get the hybrid sigma standard name."""
+    path = _write_modified(
+        tmp_path,
+        data_dir / "lambert_12x10.grib1",
+        "hybrid.grib",
+        [[("typeOfLevel", "hybrid"), ("level", n)] for n in (1, 50, 137)],
+    )
+    with grib_to_flat_netcdf_spec(str(path)) as spec:
+        attrs = spec.coord_vars["level"][2]
+        assert "standard_name" not in attrs
+        assert attrs["positive"] == "down"
+
+
+def test_grib_dropped_fields_raise(data_dir, tmp_path):
+    """A profile that would silently drop fields is an error."""
+    path = _write_modified(
+        tmp_path,
+        data_dir / "lambert_12x10.grib1",
+        "soil.grib",
+        [
+            [
+                ("indicatorOfTypeOfLevel", 112),
+                ("topLevel", top),
+                ("bottomLevel", bottom),
+            ]
+            for top, bottom in ((0, 7), (7, 28), (28, 100))
+        ],
+    )
+    with pytest.raises(ValueError, match="silently dropped"):
+        grib_to_flat_netcdf_spec(str(path))
+
+    with grib_to_flat_netcdf_spec(str(path), profile="grib") as spec:
+        assert spec.data_vars["t"][0] == ("level", "y", "x")

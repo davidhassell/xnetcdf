@@ -1047,6 +1047,17 @@ def _get_dataset_builder_cls():
 
             """
             tensor.source = tensor.source.unwrap()
+            n_expected = math.prod(tensor.user_shape)
+            if len(tensor.source) != n_expected:
+                raise ValueError(
+                    f"Variable {name!r} has {len(tensor.source)} GRIB "
+                    f"fields but its dimensions only account for "
+                    f"{n_expected}, so fields would be silently dropped. "
+                    "The profile in use does not expose all the "
+                    "distinguishing keys (e.g. the level for layer or "
+                    "non-MARS level types). Try profile='grib'."
+                )
+
             fill_value = _default_fill_value(self.dtype)
             if not self.profile.lazy_load:
                 arr = np.asarray(
