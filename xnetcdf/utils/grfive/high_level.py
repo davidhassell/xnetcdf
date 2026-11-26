@@ -107,7 +107,7 @@ class File(Mapping):
         calendar="proleptic_gregorian",
         decreasing_atmos_pressure=True,
         squeeze=True,
-            verbose=1,
+            verbose=0,
         **earthkit_options,
     ):
         if mode != "r":
