@@ -48,22 +48,34 @@ def _rotated_ll_coordinates(field, nj, ni):
     )
 
 
+def _has_rotation_angle(field):
+    """Whether a rotated grid has a non-zero ``angleOfRotation``.
+
+    `earthkit` (via ecCodes) ignores the angle when computing the
+    latitudes and longitudes, so a CF mapping that included it could
+    not be checked against anything. Such grids are left as `earthkit`
+    presents them.
+
+    """
+    return bool(float(_field_meta(field, "angleOfRotationInDegrees") or 0))
+
+
 def _rotated_pole_attrs(field):
     """Return CF rotated pole grid mapping attributes for a GRIB field.
 
     The GRIB south pole of rotation ``(lat_s, lon_s)`` is converted to
     the CF north pole ``(-lat_s, lon_s + 180)``, with
-    ``north_pole_grid_longitude`` taken from ``angleOfRotation``.
+    ``north_pole_grid_longitude`` of 0 (grids with a non-zero
+    ``angleOfRotation`` are not supported, see `_has_rotation_angle`).
 
     """
     south_lat = float(_field_meta(field, "latitudeOfSouthernPoleInDegrees"))
     south_lon = float(_field_meta(field, "longitudeOfSouthernPoleInDegrees"))
-    angle = _field_meta(field, "angleOfRotationInDegrees")
     return {
         "grid_mapping_name": _ROTATED_LL_GRID_MAPPING_NAME,
         "grid_north_pole_latitude": -south_lat,
         "grid_north_pole_longitude": (south_lon + 360.0) % 360.0 - 180.0,
-        "north_pole_grid_longitude": float(angle or 0.0),
+        "north_pole_grid_longitude": 0.0,
     }
 
 
@@ -499,6 +511,9 @@ def _apply_reduced_rotated_gg_grid_mapping(spec, field):
 
     """
     try:
+        if _has_rotation_angle(field):
+            return spec
+
         attrs = _rotated_pole_attrs(field)
     except (TypeError, ValueError):
         return spec
@@ -525,8 +540,8 @@ def _apply_grid_mapping(spec, ds):
     grids are returned unchanged.
 
     The GRIB south pole of rotation ``(lat_s, lon_s)`` is converted to
-    the CF north pole ``(-lat_s, lon_s + 180)``, with
-    ``north_pole_grid_longitude`` taken from ``angleOfRotation``.
+    the CF north pole ``(-lat_s, lon_s + 180)``. Rotated grids with a
+    non-zero ``angleOfRotation`` are returned unchanged.
 
     :Parameters:
 
@@ -553,7 +568,7 @@ def _apply_grid_mapping(spec, ds):
     if grid_type in _PROJECTED_GRID_TYPES:
         return _apply_projected_grid_mapping(spec, field)
 
-    if grid_type != "rotated_ll":
+    if grid_type != "rotated_ll" or _has_rotation_angle(field):
         return spec
 
     lat_dims = spec.aux_vars.get("latitude", ((),))[0]

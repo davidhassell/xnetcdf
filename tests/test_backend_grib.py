@@ -584,3 +584,27 @@ def test_projected_grid_mapping(data_dir, name, gm_name):
     )
     dlon = (lon - field.geography.longitudes().reshape(lon.shape) + 180) % 360
     np.testing.assert_allclose(dlon - 180, 0, atol=1e-6)
+
+
+@pytest.mark.parametrize(
+    "name", ["rotated_wind_20x20.grib", "rotated_N32_subarea.grib"]
+)
+def test_rotated_grid_with_rotation_angle_is_unchanged(
+    data_dir, tmp_path, name
+):
+    """Earthkit ignores angleOfRotation, so no mapping is created."""
+    eccodes = pytest.importorskip("eccodes")
+
+    out = tmp_path / "angle.grib"
+    with open(data_dir / name, "rb") as f, open(out, "wb") as o:
+        h = eccodes.codes_grib_new_from_file(f)
+        eccodes.codes_set(h, "angleOfRotation", 30.0)
+        eccodes.codes_write(h, o)
+        eccodes.codes_release(h)
+
+    spec = grib_to_flat_netcdf_spec(str(out))
+    assert "rotated_latitude_longitude" not in spec.aux_vars
+    assert "grid_latitude" not in spec.coord_vars
+    assert "latitude" in {**spec.aux_vars, **spec.coord_vars}
+    for _, _, a in spec.data_vars.values():
+        assert "grid_mapping" not in a
