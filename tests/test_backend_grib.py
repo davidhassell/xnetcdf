@@ -710,7 +710,7 @@ def test_grib_dropped_fields_raise(data_dir, tmp_path):
         grib_to_flat_netcdf_spec(str(path))
 
     with grib_to_flat_netcdf_spec(str(path), profile="grib") as spec:
-        assert spec.data_vars["t"][0] == ("level", "y", "x")
+        assert spec.data_vars["t"][0] == ("depth", "y", "x")
 
 
 def test_grib_single_height_gets_scalar_coordinate(data_dir):
@@ -743,4 +743,45 @@ def test_grib1_soil_depth_units_are_cm(data_dir, tmp_path):
         ],
     )
     with grib_to_flat_netcdf_spec(str(path), profile="grib") as spec:
-        assert spec.coord_vars["level"][2]["units"] == "cm"
+        assert spec.coord_vars["depth"][2]["units"] == "cm"
+
+
+def test_grib_single_altitude_gets_scalar_coordinate(data_dir, tmp_path):
+    """Other single levels with a value get a scalar coordinate too."""
+    path = _write_modified(
+        tmp_path,
+        data_dir / "example.grib",
+        "asl.grib",
+        [
+            [
+                ("typeOfFirstFixedSurface", 102),
+                ("scaleFactorOfFirstFixedSurface", 0),
+                ("scaledValueOfFirstFixedSurface", 500),
+            ]
+        ],
+    )
+    with grib_to_flat_netcdf_spec(str(path)) as spec:
+        dims, value, attrs = spec.aux_vars["altitude"]
+        assert (dims, value) == ((), 500)
+        assert attrs["standard_name"] == "altitude"
+        assert "altitude" in spec.data_vars["z"][2]["coordinates"].split()
+
+
+def test_grib_coordinates_named_after_standard_names(data_dir, tmp_path):
+    """earthkit's scalar `level` at a height is named `height`."""
+    path = _write_modified(
+        tmp_path,
+        data_dir / "example.grib",
+        "h100.grib",
+        [
+            [
+                ("typeOfFirstFixedSurface", 103),
+                ("scaleFactorOfFirstFixedSurface", 0),
+                ("scaledValueOfFirstFixedSurface", 100),
+            ]
+        ],
+    )
+    with grib_to_flat_netcdf_spec(str(path)) as spec:
+        assert "level" not in spec.aux_vars
+        assert spec.aux_vars["height"][2]["axis"] == "Z"
+        assert "height" in spec.data_vars["z"][2]["coordinates"].split()

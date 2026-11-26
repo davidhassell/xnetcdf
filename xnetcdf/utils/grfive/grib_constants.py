@@ -105,3 +105,19 @@ _GRIB2_DERIVED_FORECAST_TO_CF_METHOD = {
     8: "realization: minimum",
     9: "realization: maximum",
 }
+
+
+# CF standard names that are also used as the netCDF variable name of
+# the coordinate that has them. Others, such as ``projection_x_coordinate``
+# (``x``) and ``air_pressure`` (``level``), keep their shorter names.
+_STANDARD_NAMES_AS_VARIABLE_NAMES = frozenset(
+    {
+        "latitude",
+        "longitude",
+        "grid_latitude",
+        "grid_longitude",
+        "height",
+        "altitude",
+        "depth",
+    }
+)

@@ -32,6 +32,7 @@ from .grib_constants import (  # noqa: F401
     _LEVEL_TYPE_NAMES,
     _MIDPOINT_BOUNDS_GRID_TYPES,
     _NUMERIC_DTYPE_KINDS,
+    _STANDARD_NAMES_AS_VARIABLE_NAMES,
     _VERTICAL_NAMES,
 )
 from .grib_grid_mapping import (  # noqa: F401
@@ -1491,13 +1492,14 @@ def _get_dataset_builder_cls():
 def _apply_vertical_fixes(spec, ds):
     """Fix up vertical coordinates that `earthkit` leaves wrong or out.
 
+    * A variable with no vertical coordinate whose fields are all at
+      one single (non-layer) level of a type with a value, such as
+      2 metre temperature, gets a scalar vertical coordinate, since
+      it can't have more than one level. The attributes come from
+      `earthkit`.
+
     * GRIB1 soil depths are in centimetres, but `earthkit` labels
       them as metres.
-
-    * A variable with no vertical coordinate whose fields are all at
-      one height above the ground (e.g. 2 metre temperature) gets a
-      scalar ``height`` coordinate, since it can't have more than one
-      level.
 
     :Parameters:
 
@@ -1513,10 +1515,63 @@ def _apply_vertical_fixes(spec, ds):
             The modified *spec*.
 
     """
+    used = set(spec.dimensions) | set(spec.coord_vars) | set(spec.aux_vars)
+    used |= set(spec.data_vars)
+    all_coords = {**spec.coord_vars, **spec.aux_vars}
+    for vname, (vdims, data, attrs) in spec.data_vars.items():
+        tensor = getattr(data, "tensor", None)
+        if tensor is None:
+            continue
+
+        linked = set(vdims) | set(attrs.get("coordinates", "").split())
+        if linked & _VERTICAL_NAMES or any(
+            coord_attrs.get("axis") == "Z"
+            for cname, (_, _, coord_attrs) in all_coords.items()
+            if cname in linked
+        ):
+            continue
+
+        try:
+            vertical = [tensor.source[0].vertical, tensor.source[-1].vertical]
+            cf = vertical[0].cf()
+            levels = {v.level() for v in vertical}
+            is_single = all(
+                v.layer() is None and not v.parametric() for v in vertical
+            )
+            same_type = len({v.level_type() for v in vertical}) == 1
+        except Exception:
+            continue
+
+        std_name = cf.get("standard_name")
+        if (
+            not std_name
+            or not is_single
+            or not same_type
+            or len(levels) != 1
+            or None in levels
+            or "units" not in cf
+            or cf["units"] == "1"
+        ):
+            continue
+
+        if std_name == "height_above_mean_sea_level":
+            std_name = "altitude"
+
+        cname = _unique_name(
+            "height" if std_name == "height" else std_name, used
+        )
+        coord_attrs = dict(cf)
+        coord_attrs["standard_name"] = std_name
+        coord_attrs["axis"] = "Z"
+        spec.aux_vars[cname] = ((), np.array(levels.pop()), coord_attrs)
+        attrs["coordinates"] = " ".join(
+            [*attrs.get("coordinates", "").split(), cname]
+        )
+
     # GRIB1 depths below the land surface
     if len(ds) and _field_meta(ds[0], "edition") == 1:
         for container in (spec.coord_vars, spec.aux_vars):
-            for cname, (_, _, cattrs) in container.items():
+            for cattrs in (a for _, _, a in container.values()):
                 if (
                     cattrs.get("standard_name") == "depth"
                     and cattrs.get("units") == "m"
@@ -1524,55 +1579,81 @@ def _apply_vertical_fixes(spec, ds):
                 ):
                     cattrs["units"] = "cm"
 
-    # Scalar height coordinates for single height level variables
-    used = set(spec.dimensions) | set(spec.coord_vars) | set(spec.aux_vars)
-    used |= set(spec.data_vars)
-    for vname, (vdims, data, attrs) in spec.data_vars.items():
-        tensor = getattr(data, "tensor", None)
-        if tensor is None:
-            continue
+    return spec
 
-        if any(
-            coord_attrs.get("axis") == "Z"
-            for cname, (_, _, coord_attrs) in {
-                **spec.coord_vars,
-                **spec.aux_vars,
-            }.items()
-            if cname in vdims or cname in attrs.get("coordinates", "").split()
-        ):
-            continue
 
-        try:
-            fields = [tensor.source[0], tensor.source[-1]]
-            vertical = [f.vertical for f in fields]
-            level_types = {v.level_type() for v in vertical}
-            levels = {v.level() for v in vertical}
-            units = vertical[0].units()
-        except Exception:
-            continue
+def _name_coordinates_after_standard_names(spec):
+    """Name coordinates after their standard names, where listed.
 
-        if (
-            level_types != {"height_above_ground_level"}
-            or len(levels) != 1
-            or None in levels
-        ):
-            continue
+    A coordinate whose ``standard_name`` is in
+    `_STANDARD_NAMES_AS_VARIABLE_NAMES` (e.g. ``height``) is renamed
+    to it, along with its dimension (if it is a dimension
+    coordinate), its bounds variable, and all references to them.
 
-        hname = _unique_name("height", used)
-        spec.aux_vars[hname] = (
-            (),
-            np.array(levels.pop()),
-            {
-                "standard_name": "height",
-                "long_name": "height above the surface",
-                "units": "m" if str(units) == "meter" else str(units),
-                "positive": "up",
-                "axis": "Z",
-            },
-        )
-        coordinates = attrs.get("coordinates", "").split()
-        attrs["coordinates"] = " ".join([*coordinates, hname])
+    :Parameters:
 
+        spec: `FlatNetCDFSpec`
+            The CF normalised specification, modified in place.
+
+    :Returns:
+
+        `FlatNetCDFSpec`
+            The modified *spec*.
+
+    """
+    used = (
+        set(spec.dimensions)
+        | set(spec.coord_vars)
+        | set(spec.aux_vars)
+        | set(spec.data_vars)
+    )
+    renames = {}
+    for container in (spec.coord_vars, spec.aux_vars):
+        for name, (dims, _, attrs) in container.items():
+            std_name = attrs.get("standard_name")
+            if (
+                std_name in _STANDARD_NAMES_AS_VARIABLE_NAMES
+                and name != std_name
+                and std_name not in used
+            ):
+                used.add(std_name)
+                renames[name] = std_name
+                if std_name in ("height", "altitude", "depth"):
+                    attrs.setdefault("axis", "Z")
+
+                bounds = attrs.get("bounds")
+                if bounds in spec.aux_vars:
+                    new_bounds = _unique_name(f"{std_name}_bnds", used)
+                    renames[bounds] = new_bounds
+                    attrs["bounds"] = new_bounds
+
+    if not renames:
+        return spec
+
+    def rename_tuple(dims):
+        return tuple(renames.get(d, d) for d in dims)
+
+    def rebuild(container, fix):
+        items = [(renames.get(k, k), fix(v)) for k, v in container.items()]
+        container.clear()
+        container.update(items)
+
+    dimensions = [(renames.get(k, k), v) for k, v in spec.dimensions.items()]
+    spec.dimensions.clear()
+    spec.dimensions.update(dimensions)
+    rebuild(spec.coord_vars, lambda v: (rename_tuple(v[0]), v[1], v[2]))
+    rebuild(spec.aux_vars, lambda v: (rename_tuple(v[0]), v[1], v[2]))
+
+    def fix_data_var(entry):
+        dims, data, attrs = entry
+        if "coordinates" in attrs:
+            attrs["coordinates"] = " ".join(
+                renames.get(c, c) for c in attrs["coordinates"].split()
+            )
+
+        return rename_tuple(dims), data, attrs
+
+    rebuild(spec.data_vars, fix_data_var)
     return spec
 
 
@@ -1728,4 +1809,5 @@ def grib_to_flat_netcdf_spec(
         ),
     )
     spec = _apply_vertical_fixes(spec, ds)
+    spec = _name_coordinates_after_standard_names(spec)
     return _apply_grid_mapping(spec, ds)
