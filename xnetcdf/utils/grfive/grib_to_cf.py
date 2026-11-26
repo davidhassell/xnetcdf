@@ -14,6 +14,8 @@ import io
 import math
 import os
 import threading
+import uuid
+import weakref
 from dataclasses import dataclass
 from functools import lru_cache
 from typing import Any
@@ -88,7 +90,79 @@ _GRIB2_DERIVED_FORECAST_TO_CF_METHOD = {
     9: "realization: maximum",
 }
 
-_EARTHKIT_LOCK = threading.Lock()
+_LOCK_REGISTRY = weakref.WeakValueDictionary()
+_LOCK_REGISTRY_GUARD = threading.Lock()
+
+
+class _PicklableLock:
+    """A re-entrant lock that survives pickling.
+
+    The underlying `threading.RLock` is not pickled. Instead each
+    instance carries a token, and unpickling in a process re-uses any
+    lock already registered for that token, so all copies of a lock
+    within one process exclude each other.
+
+    """
+
+    def __init__(self, token=None):
+        self._token = token or uuid.uuid4().hex
+        with _LOCK_REGISTRY_GUARD:
+            self._lock = _LOCK_REGISTRY.setdefault(
+                self._token, threading.RLock()
+            )
+
+    def acquire(self, *args, **kwargs):
+        """Acquire the lock."""
+        return self._lock.acquire(*args, **kwargs)
+
+    def release(self):
+        """Release the lock."""
+        self._lock.release()
+
+    def __enter__(self):
+        self._lock.acquire()
+        return self
+
+    def __exit__(self, *exc):
+        self._lock.release()
+
+    def __getstate__(self):
+        return {"token": self._token}
+
+    def __setstate__(self, state):
+        self.__init__(state["token"])
+
+
+def _get_source_lock(ds):
+    """Return the lock shared by everything reading from *ds*.
+
+    The lock is cached on *ds* so that all arrays derived from the
+    same `earthkit.data.FieldList` (and so the same GRIB file handles
+    and caches) are serialised against each other, whereas arrays
+    from different sources can be read in parallel.
+
+    :Parameters:
+
+        ds: `earthkit.data.FieldList`
+
+    :Returns:
+
+        `_PicklableLock`
+
+    """
+    with _LOCK_REGISTRY_GUARD:
+        lock = getattr(ds, "_xnetcdf_lock", None)
+
+    if lock is None:
+        lock = _PicklableLock()
+        with _LOCK_REGISTRY_GUARD:
+            lock = getattr(ds, "_xnetcdf_lock", None) or lock
+            try:
+                ds._xnetcdf_lock = lock
+            except AttributeError:
+                pass
+
+    return lock
 
 
 def _is_time_units(units):
@@ -157,7 +231,7 @@ def _as_fieldlist(ds, source_type, source_kwargs):
 
         source_type: `str`, optional
             Explicit `earthkit.data.from_source` source type
-            (e.g. ``"file"`` or ``"stream"``) to bypass automatic
+            (e.g. ``'file'`` or ``'stream'``) to bypass automatic
             input type detection.
 
         source_kwargs: `dict`, optional
@@ -479,7 +553,7 @@ class LazyTensorArray:
             Array API namespace passed to `tensor.to_array`.
 
         dtype: `numpy.dtype` or type
-            Target `numpy` data type of materialized slices.
+            Target `numpy` data type of materialised slices.
 
         var_name: `str`
             Variable name used in `__repr__` and closed-array error
@@ -492,9 +566,19 @@ class LazyTensorArray:
         flip_axes: `tuple` of `int`, default ()
             Raw axis indices along which indexing should be reversed.
 
-        lock: `threading.Lock`, optional
-            Synchronization lock guarding `earthkit` tensor
-            reads. Defaults to the module-level `_EARTHKIT_LOCK`.
+        lock: `_PicklableLock`, optional
+            Lock guarding `earthkit` tensor reads. It should be
+            shared by all arrays backed by the same GRIB source. If
+            not provided, a new lock private to this array is used.
+
+    .. note:: The lock pickles safely (see `_PicklableLock`), but
+              whether a `LazyTensorArray` as a whole can be pickled,
+              such as for use with a multiprocessing or distributed
+              scheduler, has not been tested. It also depends on
+              whether the underlying `earthkit` tensor can be
+              pickled, which is governed by `earthkit.data`'s
+              ``grib-file-serialisation-policy`` configuration. This
+              is currently not something that is handled here.
 
     """
 
@@ -508,7 +592,7 @@ class LazyTensorArray:
         var_name,
         squeeze_axes: tuple[int, ...] = (),
         flip_axes: tuple[int, ...] = (),
-        lock: threading.Lock | None = None,
+        lock: _PicklableLock | None = None,
     ):
         self.tensor = tensor
         self._raw_shape = tuple(shape)
@@ -524,10 +608,7 @@ class LazyTensorArray:
         self.dtype = np.dtype(dtype)
         self.array_namespace = array_namespace
         self._var_name = var_name
-        if lock is not None:
-            self.lock = lock
-        else:
-            self.lock = _EARTHKIT_LOCK
+        self.lock = lock if lock is not None else _PicklableLock()
 
     @property
     def nbytes(self):
@@ -636,7 +717,13 @@ class LazyTensorArray:
 
             key: `int`, `slice`, `Ellipsis`, array_like, or `tuple`
                 Indexing expression relative to the exposed
-                (squeezed/flipped) view.
+                (squeezed/flipped) view. Integers and integer
+                arrays may be negative. Boolean arrays must be 1-d
+                and span a whole axis. ``None`` is not supported.
+                Multiple array indices are applied independently to
+                their own axes (orthogonal indexing, as in
+                `netCDF4`), not pointwise as in `numpy`. An
+                `IndexError` is raised for out of bounds indices.
 
         :Returns:
 
@@ -649,20 +736,75 @@ class LazyTensorArray:
         if not isinstance(key, tuple):
             key = (key,)
 
-        if Ellipsis in key:
-            idx = key.index(Ellipsis)
+        if any(k is None for k in key):
+            raise IndexError(
+                "numpy.newaxis (None) is not supported when indexing "
+                f"{self!r}"
+            )
+
+        n_ellipsis = sum(k is Ellipsis for k in key)
+        if n_ellipsis > 1:
+            raise IndexError("an index can only have a single ellipsis")
+
+        if n_ellipsis:
+            idx = next(i for i, k in enumerate(key) if k is Ellipsis)
             n_missing = self.ndim - (len(key) - 1)
             key = key[:idx] + (slice(None),) * n_missing + key[idx + 1 :]
+
+        if len(key) > self.ndim:
+            raise IndexError(
+                f"too many indices for {self!r}: array is "
+                f"{self.ndim}-dimensional, but {len(key)} were indexed"
+            )
 
         if len(key) < self.ndim:
             key = key + (slice(None),) * (self.ndim - len(key))
 
         norm_exposed = []
-        for k, dim_size in zip(key, self.shape):
+        for axis, (k, dim_size) in enumerate(zip(key, self.shape)):
+            if not isinstance(k, slice):
+                if not isinstance(k, (int, np.integer)):
+                    k = np.asarray(k)
+                    if k.ndim == 0 and k.dtype.kind in "iu":
+                        k = int(k)
+
             if isinstance(k, (int, np.integer)):
                 k = int(k)
+                if not -dim_size <= k < dim_size:
+                    raise IndexError(
+                        f"index {k} is out of bounds for axis {axis} "
+                        f"with size {dim_size}"
+                    )
+
                 if k < 0:
                     k += dim_size
+            elif isinstance(k, np.ndarray):
+                if k.dtype.kind == "b":
+                    if k.ndim != 1 or k.shape[0] != dim_size:
+                        raise IndexError(
+                            f"boolean index for axis {axis} must be 1-d "
+                            f"with length {dim_size}, got shape {k.shape}"
+                        )
+
+                    k = np.flatnonzero(k)
+                elif k.dtype.kind in "iu":
+                    if k.size and (
+                        k.min() < -dim_size or k.max() >= dim_size
+                    ):
+                        raise IndexError(
+                            f"index array for axis {axis} has values out "
+                            f"of bounds for size {dim_size}"
+                        )
+
+                    k = np.where(k < 0, k + dim_size, k)
+                elif k.size or k.dtype.kind != "f":
+                    raise IndexError(
+                        "only integers, slices, Ellipsis, and integer or "
+                        f"boolean arrays are valid indices, not {k.dtype}"
+                    )
+                else:
+                    # Empty list: np.asarray([]) is float64
+                    k = k.astype(int)
 
             norm_exposed.append(k)
 
@@ -737,7 +879,7 @@ class LazyTensorArray:
         :Returns:
 
             `numpy.ndarray`
-                Materialized array slice with singleton
+                Materialised array slice with singleton
                 integer-indexed axes squeezed and negative-step or
                 flipped axes oriented properly.
 
@@ -780,7 +922,7 @@ class LazyTensorArray:
             return arr
 
     def __array__(self, dtype=None, copy=None):
-        """Materialize the entire array via `numpy.asarray(self)`.
+        """Materialise the entire array via `numpy.asarray(self)`.
 
         :Parameters:
 
@@ -794,7 +936,7 @@ class LazyTensorArray:
         :Returns:
 
             `numpy.ndarray`
-                Full materialized data array.
+                Full materialised data array.
 
         """
         arr = self[tuple(slice(None) for _ in self.shape)]
@@ -835,7 +977,7 @@ class FlatNetCDFSpec:
             values, attrs)``.
 
         global_attrs: dict of {str: Any}
-            Sanitized dataset-level netCDF global attributes.
+            Sanitised dataset-level netCDF global attributes.
 
     """
 
@@ -945,7 +1087,7 @@ def _get_dataset_builder_cls():
             `earthkit.data.xr_engine.builder.SingleDatasetBuilder`.
 
     """
-    # initialize eckit before importing
+    # Initialise eckit before importing
     # `earthkit.data.xr_engine.builder` to prevent C++ library
     # initialisation order conflicts with `pyproj`.
     try:
@@ -968,8 +1110,10 @@ def _get_dataset_builder_cls():
 
         """
 
-        def __init__(self, *args, squeeze_singletons: bool = False, **kwargs):
-            """Initialize the flat netCDF backend data builder.
+        def __init__(
+            self, *args, squeeze_singletons=False, lock=None, **kwargs
+        ):
+            """Initialise the flat netCDF backend data builder.
 
             :Parameters:
 
@@ -981,6 +1125,10 @@ def _get_dataset_builder_cls():
                     Whether to drop size 1, non-horizontal dimensions
                     after dimension renaming and ownership tracking.
 
+                lock: `_PicklableLock`, optional
+                    The lock shared by the `LazyTensorArray`
+                    instances that are created.
+
                 **kwargs
                     Keyword arguments forwarded to
                     `BackendDataBuilder`.
@@ -988,6 +1136,7 @@ def _get_dataset_builder_cls():
             """
             super().__init__(*args, **kwargs)
             self._squeeze_singletons = squeeze_singletons
+            self._lock = lock
 
         def _make_field_coords(self):
             """Make coordinates.
@@ -996,7 +1145,7 @@ def _get_dataset_builder_cls():
 
             :Returns:
 
-                `dict` of {str: tuple of (tuple of `str`, numpy.ndarray, dict)}
+                `dict`
                     Grid coordinate variables mapped to ``(dims,
                     values, attrs)``.
 
@@ -1014,7 +1163,7 @@ def _get_dataset_builder_cls():
 
             :Returns:
 
-                `dict` of {str: tuple of (tuple of `str`, Any, dict)}
+                `dict`
                     Combined coordinate dictionary mapped to ``(dims,
                     values, attrs)``.
 
@@ -1034,7 +1183,7 @@ def _get_dataset_builder_cls():
             return r
 
         def build_values(self, tensor, var_dims, name):
-            """Wrap or materialize a variable's `earthkit` field tensor.
+            """Wrap or materialise a variable's `earthkit` field tensor.
 
             :Parameters:
 
@@ -1070,7 +1219,7 @@ def _get_dataset_builder_cls():
                 self.array_namespace,
                 self.dtype,
                 name,
-                lock=_EARTHKIT_LOCK,
+                lock=self._lock,
             )
 
         @staticmethod
@@ -1293,7 +1442,8 @@ def _get_dataset_builder_cls():
                     pass2, dimensions, all_coords, data_vars
                 )
 
-            # Record pre-squeeze dimension ownership so scalar coords only link to their parent vars
+            # Record pre-squeeze dimension ownership so scalar coords
+            # only link to their parent vars
             var_orig_dims = {
                 k: set(dims) for k, (dims, _, _) in data_vars.items()
             }
@@ -1322,7 +1472,8 @@ def _get_dataset_builder_cls():
                     )
                 )
 
-            # Fold scalar level_type / levtype (MARS) onto the vertical coordinate
+            # Fold scalar level_type/levtype (MARS) onto the vertical
+            # coordinate
             for lt_key in _LEVEL_TYPE_NAMES:
                 if lt_key in all_coords and all_coords[lt_key][0] == ():
                     lt_val = str(np.asarray(all_coords[lt_key][1]).item())
@@ -1371,7 +1522,8 @@ def _get_dataset_builder_cls():
                 else:
                     raw_aux_vars[name] = entry
 
-            # Enforce a single collision-free variable namespace across coord_vars, data_vars, and aux_vars
+            # Enforce a single collision-free variable namespace
+            # across coord_vars, data_vars, and aux_vars
             used_var_names: set[str] = set(coord_vars.keys())
             dim_names = set(dimensions.keys())
 
@@ -1421,10 +1573,12 @@ def _get_dataset_builder_cls():
         """`SingleDatasetBuilder` subclass wired to
         `FlatNetCDFBackendDataBuilder`."""
 
-        def __init__(self, ds, profile="auto", backend_kwargs=None, **kwargs):
+        def __init__(
+            self, ds, profile="auto", backend_kwargs=None, lock=None, **kwargs
+        ):
             """Initialise the dataset builder .
 
-            Initializes the dataset builder with profile resolution
+            Initialises the dataset builder with profile resolution
             and squeeze handling.
 
             :Parameters:
@@ -1438,6 +1592,9 @@ def _get_dataset_builder_cls():
 
                 backend_kwargs: `dict`, optional
                     Backend configuration keyword arguments.
+
+                lock: `_PicklableLock`, optional
+                    The lock shared by all arrays read from *ds*.
 
                 **kwargs
                     Additional backend keyword arguments merged over
@@ -1461,6 +1618,7 @@ def _get_dataset_builder_cls():
             self.builder = lambda *a, **kw: FlatNetCDFBackendDataBuilder(
                 *a,
                 squeeze_singletons=squeeze_singletons,
+                lock=lock,
                 **kw,
             )
 
@@ -2664,10 +2822,10 @@ def grib_to_flat_netcdf_spec(
     profile="auto",
     calendar=CF_CALENDAR,
     decreasing_atmos_pressure=True,
-    squeeze=None,
+    squeeze=True,
     source_type=None,
     source_kwargs=None,
-    **backend_kwargs,
+    profile_kwargs=None,
 ):
     """Convert GRIB data into a CF compliant `FlatNetCDFSpec`.
 
@@ -2682,15 +2840,15 @@ def grib_to_flat_netcdf_spec(
             Input GRIB source. Accepts local paths, ``file://`` URIs,
             ``http(s)://`` or ``ftp://`` URLs, ``fsspec`` URIs or
             ``OpenFile`` objects, raw bytes, open binary streams, an
-            existing `earthkit.data.FieldList` / ``Source``, or a
+            existing `earthkit.data.FieldList`/``Source``, or a
             sequence of ``Field`` objects.
 
         profile: `str` or Profile, default "auto"
-            `earthkit.data` ``xr_engine`` profile name or object
-            (e.g. ``"auto"``, ``"grib"``, ``"mars"``, or
-            ``"earthkit"``). When ``"auto"``, selects ``"mars"`` if
-            MARS namespace metadata is present on the first field and
-            ``"grib"`` otherwise.
+             The `earthkit.data` ``xr_engine`` profile name or object
+             (e.g. ``'auto'``, ``'grib'``, ``'mars'``, or
+             ``'earthkit'``). When ``'auto'`` (the default), selects
+             ``'mars'`` if MARS namespace metadata is present on the
+             first field and ``'grib'`` otherwise.
 
         calendar: `str`, default "proleptic_gregorian"
             CF calendar name used when encoding datetime coordinates
@@ -2720,20 +2878,22 @@ def grib_to_flat_netcdf_spec(
 
         source_type: `str`, optional
             Explicit `earthkit.data.from_source` source type (such as
-            ``"file"`` or ``"stream"``) to bypass automatic input type
+            ``'file'`` or ``'stream'``) to bypass automatic input type
             detection.
 
         source_kwargs: `dict`, optional
             Additional keyword arguments forwarded to
             `earthkit.data.from_source`.
 
-        **backend_kwargs
+        profile_kwargs
             Additional keyword arguments forwarded to
-            `earthkit.data`'s `SingleDatasetBuilder` /
-            `BackendDataBuilder` (for example ``lazy_load=False``,
-            ``allow_holes=True``, or ``add_earthkit_attrs=True``,
-            which defaults to False here).
-
+            `earthkit.data.xr_engine.profile.Profile` via
+            `SingleDatasetBuilder` (for example ``lazy_load=False``,
+            ``allow_holes=True``, ``rename_dims=...``, or
+            ``add_earthkit_attrs=True``, which defaults to False
+            here). Do not pass ``'squeeze'`` here; use the dedicated
+            *squeeze* parameter instead.
+    
     :Returns:
 
         `FlatNetCDFSpec`
@@ -2786,14 +2946,16 @@ def grib_to_flat_netcdf_spec(
         ds, source_type=source_type, source_kwargs=source_kwargs
     )
 
-    backend_kwargs.setdefault("add_earthkit_attrs", False)
-    if squeeze is not None:
-        backend_kwargs["squeeze"] = squeeze
+    # Copy so that the caller's dictionary is not modified
+    profile_kwargs = dict(profile_kwargs or {})
+    profile_kwargs.setdefault("add_earthkit_attrs", False)
+    profile_kwargs["squeeze"] = squeeze
 
-    with _EARTHKIT_LOCK:
+    lock = _get_source_lock(ds)
+    with lock:
         builder_cls = _get_dataset_builder_cls()
         builder = builder_cls(
-            ds, profile=profile, backend_kwargs=backend_kwargs
+            ds, profile=profile, backend_kwargs=profile_kwargs, lock=lock
         )
         result = builder.build()
         del builder

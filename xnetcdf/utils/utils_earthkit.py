@@ -29,13 +29,14 @@ def earthkit_read(dataset, options):
 
     """
     import earthkit.data as ekd
-    import grfive
+    
+    from .grfive import File
 
     dataset_name = ""
     protocol = -1
 
     if isinstance(dataset, ekd.FieldList):
-        nc = dataset
+        nc = File(dataset, mode="r", **options)
         library = get_library(dataset)
         dataset_name = dataset.filename
         owns_accessor = False
@@ -63,8 +64,6 @@ def earthkit_read(dataset, options):
         if not dataset_name:
             dataset_name = "<earthkit-like>"
 
-        nc = grfive.File(dataset, mode="r", **options)
-
     else:
         import earthkit
 
@@ -76,7 +75,7 @@ def earthkit_read(dataset, options):
         dataset, dataset_name, protocol = get_dataset_name_and_protocol(
             dataset
         )
-        nc = grfive.File(dataset, mode="r", **options)
+        nc = File(dataset, mode="r", **options)
 
         library = earthkit
         owns_accessor = True

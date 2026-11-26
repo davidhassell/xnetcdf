@@ -1,13 +1,13 @@
-"""Utilities for the `netcdf_file` backend."""
+"""Utilities for the `scipy` backend."""
 
 from .utils_general import get_dataset_name_and_protocol, get_library
 
 
-def netcdf_file_close(root):
-    """Close the dataset opened with `netcdf_file`.
+def scipy_close(root):
+    """Close the dataset opened with `scipy.io.netcdf_file`.
 
     It is assumed, but not checked, that the backend is indeed
-    `netcdf_file`.
+    `scipy`.
 
     :Parameters:
 
@@ -33,8 +33,8 @@ def netcdf_file_close(root):
     root._grp.close()
 
 
-def netcdf_file_dtype(variable):
-    """The data type of variable opened with `netcdf_file`.
+def scipy_dtype(variable):
+    """The data type of variable opened with `scipy.io.netcdf_file`.
 
     :Parameters:
 
@@ -49,7 +49,7 @@ def netcdf_file_dtype(variable):
     return variable._var[(slice(0, 1),) * len(variable.shape)].flat[0].dtype
 
 
-def netcdf_file_read(dataset, options):
+def scipy_read(dataset, options):
     """Read a dataset with `scipy.io.netcdf_file`.
 
     The dataset is opened with `scipy.io.netcdf_file` options
@@ -75,7 +75,7 @@ def netcdf_file_read(dataset, options):
 
         (`scipy.io.netcdf_file`, `dict`, library)
             The opened dataset, the dataset's global attributes, and
-            the `netcdf_file` library itself.
+            the `scipy` library itself.
 
     """
     from scipy.io import netcdf_file
@@ -122,14 +122,14 @@ def netcdf_file_read(dataset, options):
         "protocol": protocol,
         "nc": nc,
         "attrs": nc._attributes,
-        "backend_api": "netcdf_file",
+        "backend_api": "scipy",
         "library": library,
         "owns_accessor": owns_accessor,
     }
 
 
-def netcdf_file_parse_group_structure(group):
-    """Parse the group structure for the `netcdf_file` backend.
+def scipy_parse_group_structure(group):
+    """Parse the group structure for the `scipy` backend.
 
     Parses variables, dimensions in the root. There are no
     sub-groups in netCDF-3.

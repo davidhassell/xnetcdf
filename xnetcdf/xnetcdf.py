@@ -14,12 +14,12 @@ from .utils import (
     hdf5_parse_group_structure,
     netCDF4_parse_group_structure,
     netCDF4_read,
-    netcdf_file_close,
-    netcdf_file_dtype,
-    netcdf_file_parse_group_structure,
-    netcdf_file_read,
     parse_attributes,
     pyfive_read,
+    scipy_close,
+    scipy_dtype,
+    scipy_parse_group_structure,
+    scipy_read,
     umfive_read,
     xarray_parse_group_structure,
     xarray_read,
@@ -33,16 +33,16 @@ from .utils import (
 #
 # Note to developers: If you change the order of this dictionary, or
 #                     add a new key/value pair, you must update the
-#                     `Dataset` docstring. TODO
+#                     `Dataset` docstring.
 _read_functions = {
     "pyfive": pyfive_read,
     "zarr": zarr_read,
     "umfive": umfive_read,
-    "earthkit": earthkit_read,
     "netCDF4": netCDF4_read,
-    "netcdf_file": netcdf_file_read,
-    "h5py": h5py_read,
+    "earthkit": earthkit_read,
     "xarray": xarray_read,
+    "scipy": scipy_read,
+    "h5py": h5py_read,
 }
 
 backends = tuple(_read_functions)
@@ -86,7 +86,8 @@ class Mixin:
             `str`
                 The name of the backend API, one of ``'pyfive'``,
                 ``'zarr'``, ``'umfive'``, ``'netCDF4'``,
-                ``'netcdf_file'``, ``'h5py'``, and ``'xarray'``.
+                ``'earthkit'``, ``'xarray'``, ``'scipy'``, and
+                ``'h5py'``
 
         """
         return self.root._backend_api
@@ -557,10 +558,10 @@ class Variable(Mixin, Mixin2):
         """Return a subspace of the data array defined by indices."""
         array = self._var[indices]
         match self.backend_api:
-            case "netcdf_file":
+            case "scipy":
                 # Need to copy the numpy array returned by
-                # scipy.io.netcdf_file with mmap=True. See the
-                # comments in `netcdf_file_close` for details.
+                # `scipy.io.netcdf_file with mmap=True. See the
+                # comments in `scipy_close` for details.
                 array = array.copy()
             case "xarray":
                 # Get the numpy array from the Dask array
@@ -649,7 +650,7 @@ class Variable(Mixin, Mixin2):
                     elif chunks is not None:
                         chunks = tuple(chunks)
 
-                case "netcdf_file":
+                case "scipy":
                     chunks = None
 
                 case "zarr":
@@ -726,8 +727,8 @@ class Variable(Mixin, Mixin2):
                 ):
                     dtype = self._var.dtype
 
-                case "netcdf_file":
-                    dtype = netcdf_file_dtype(self)
+                case "scipy":
+                    dtype = scipy_dtype(self)
 
                 case _:
                     raise NotImplementedError(
@@ -922,7 +923,7 @@ class Variable(Mixin, Mixin2):
                     else:
                         chunking = list(chunks)
 
-                case "netcdf_file":
+                case "scipy":
                     chunking = None
 
                 case _:
@@ -1037,7 +1038,7 @@ class Variable(Mixin, Mixin2):
                         for ndim in self._var.get_dims()
                     ]
 
-                case "netcdf_file":
+                case "scipy":
                     dimensions = self.root.dimensions
                     dims = [dimensions[dim] for dim in self._var.dimensions]
 
@@ -1421,8 +1422,8 @@ class Group(Mixin, Mixin2, Mapping):
             case "netCDF4":
                 netCDF4_parse_group_structure(self)
 
-            case "netcdf_file":
-                netcdf_file_parse_group_structure(self)
+            case "scipy":
+                scipy_parse_group_structure(self)
 
             case "zarr":
                 zarr_parse_group_structure(self)
@@ -1817,9 +1818,9 @@ class Dataset(Group):
 
     Additionaly, a dataset may be provided as (a subclass of) any of
     the following backend objects: `pyfive.File`, `zarr.Group`,
-    `umfive.File`, `netCDF4.Dataset`, `scipy.io.netcdf_file`,
-    `h5py.File`, `xarray.Dataset`, and `xarray.DataTree`. See the
-    *dataset* parameter for details.
+    `umfive.File`, `netCDF4.Dataset` `earthkit.data.FieldList`,
+    `xarray.Dataset`, and `xarray.DataTree`, `h5py.File`, and
+    `scipy.io.netcdf_file`. See the *dataset* parameter for details.
 
     :Dataset definition:
 
@@ -1894,8 +1895,9 @@ class Dataset(Group):
             * Any of the following backend objects (see the *backend*
               parameter) that defines a dataset: `pyfive.File`,
               `zarr.Group`, `umfive.File`, `netCDF4.Dataset`,
-              `scipy.io.netcdf_file`, `h5py.File`, `xarray.Dataset`,
-              and `xarray.DataTree`.
+              `earthkit.data.FieldList`, `xarray.Dataset`, and
+              `xarray.DataTree`, `h5py.File`, and
+              `scipy.io.netcdf_file`
 
             * Any object ``x`` that defines a dataset and has the same
               API as one of the allowed backend objects. In practice,
@@ -1917,7 +1919,12 @@ class Dataset(Group):
             providing the ordered sequence of backends:
 
             ``('pyfive', 'zarr' 'umfive', 'earthkit', 'netCDF4',
-            'netcdf_file', 'h5py', 'xarray')``
+            'earthkit', 'xarray')
+
+            'scipy', 'h5py')``
+
+            ``('pyfive', 'zarr' 'umfive', 'netCDF4',
+            'scipy', 'h5py', 'xarray')``
 
             If the dataset is given as a (subclass of a) backend
             object, then that backend must be one of the backends
@@ -1935,14 +1942,13 @@ class Dataset(Group):
             Backend            Library                 Dataset formats
             =================  ======================  ===================
             ``'pyfive'``       `pyfive`                netCDF-4
-            ``'zarr'``         `zarr`                  Zarr, Kerchunk
+            ``'zarr'``         `zarr`                  Zarr v3, Zarr v2
             ``'umfive'``       `umfive`                PP, fields file
-            ``'earthkit'``     `earthkit`              GRIB
             ``'netCDF4'``      `netCDF4`               netCDF-4, netCDF-3
-            ``'netcdf_file'``  `scipy.io.netcdf_file`  netCDF-3
+            ``'xarray'``       `xarray`                Kerchunk
+            ``'earthkit'``     `earthkit`              GRIB
+            ``'scipy'``        `scipy`                 netCDF-3
             ``'h5py'``         `h5py`                  netCDF-4
-            ``'xarray'``       `xarray`                netCDF-4, netCDF-3,
-                                                       Zarr, Kerchunk
             =================  ======================  ===================
 
             Note that the `xarray` library is itself an interface to
@@ -1999,11 +2005,21 @@ class Dataset(Group):
             argument can not be provided.
 
         earthkit_options: `dict` or `None`, optional
-            Keyword arguments that are passed to
-            `earthkit.data.from_source` when opening a dataset with
-            the ``'earthkit'`` backend. Setting to `None` (the
-            default) is equivalent to providing an empty dictionary.
 
+            when opening a dataset with the ``'earthkit'`` backend,
+            keyword arguments that are passed to
+            `earthkit.data.from_source`,
+            `earthkit.data.xr_engine.profile.Profile`, or used to
+            control the GRIB to CF mapping metadata. Setting to
+            `None` (the default) is equivalent to providing an empty
+            dictionary.
+
+            ``{'from_source': {'name': 'stream'},
+               'profile': {'name': 'mars',
+                           'squeeze': False},
+               'mapping': {'calendar': '365_day',
+                           'decreasing_atmos_pressure': False}}``
+                            
         netCDF4_options: `dict` or `None`, optional
             Keyword arguments that are passed to `netCDF4.Dataset`
             when opening a dataset with the ``'netCDF4'``
@@ -2013,15 +2029,18 @@ class Dataset(Group):
             not provided, and can't be set to a different value. The
             ``filename`` argument can not be provided.
 
-        netcdf_file_options: `dict` or `None`, optional
+        scipy_options: `dict` or `None`, optional
             Keyword arguments that are passed to
             `scipy.io.netcdf_file` when opening a dataset with the
-            ``'netcdf_file'`` backend. Setting to `None` (the default)
+            ``'scipy'`` backend. Setting to `None` (the default)
             is equivalent to providing an empty dictionary. The
             keyword arguments ``mode='r'`` and ``mmap=True`` are
             always automatically applied, even when not provided, and
             can't be set to different values. The ``filename``
             argument can not be provided.
+
+        netcdf_file_options: `dict` or `None`, optional
+            Deprecated at version 0.4.0. Use *scipy_options* instead.
 
         h5py_options: `dict` or `None`, optional
             Keyword arguments that are passed to `h5py.File` when
@@ -2121,12 +2140,13 @@ class Dataset(Group):
         umfive_options=None,
         earthkit_options=None,
         h5py_options=None,
+        scipy_options=None,
         netCDF4_options=None,
-        netcdf_file_options=None,
         xarray_options=None,
         zarr_options=None,
         zarr_dimension_search="closest_ancestor",
         verbose=0,
+        netcdf_file_options=None,
     ):
         # Options for the different backend read functions
         read_options = {}
@@ -2148,11 +2168,17 @@ class Dataset(Group):
         if netCDF4_options:
             read_options["netCDF4"] = netCDF4_options
 
-        if netcdf_file_options:
-            read_options["netcdf_file"] = netcdf_file_options
+        if scipy_options:
+            read_options["scipy"] = scipy_options
 
         if h5py_options:
             read_options["h5py"] = h5py_options
+
+        if netcdf_file_options is not None:
+            raise ValueError(
+                "netcdf_file_options was deprecated at version 0.4.0. "
+                "Use scipy_options instead"
+            )                
 
         self._zarr_dimension_search = zarr_dimension_search
 
@@ -2461,8 +2487,8 @@ class Dataset(Group):
         if not self._owns_accessor:
             return
 
-        if self.backend_api == "netcdf_file":
-            netcdf_file_close(self)
+        if self.backend_api == "scipy":
+            scipy_close(self)
         else:
             try:
                 self._grp.close()

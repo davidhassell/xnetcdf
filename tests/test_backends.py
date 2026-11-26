@@ -317,11 +317,11 @@ def test_kerchunk(data_dir):
         )
 
 
-def test_netcdf_file_1(data_dir):
-    """Test Kerchunk functionality."""
+def test_scipy_1(data_dir):
+    """Test scipy functionality."""
     dataset = data_dir / "test1.nc3"
-    with xnetcdf.Dataset(dataset, backend="netcdf_file") as p:
-        assert p.backend_api == "netcdf_file"
+    with xnetcdf.Dataset(dataset, backend="scipy") as p:
+        assert p.backend_api == "scipy"
         assert (
             p.dump(display=False)
             == f"""{p.dataset_name}: <xnetcdf.Dataset: /, 3 dimensions, 6 variables, 0 groups>
@@ -358,18 +358,18 @@ def test_netcdf_file_1(data_dir):
         )
 
 
-def test_netcdf_file_2(data_dir):
-    """Test netcdf_file functionality."""
+def test_scipy_2(data_dir):
+    """Test scipy functionality."""
     from scipy.io import netcdf_file
 
     dataset = data_dir / "test1.nc3"
     x = netcdf_file(dataset)
     with (
-        xnetcdf.Dataset(dataset, backend="netcdf_file") as p1,
-        xnetcdf.Dataset(x, backend="netcdf_file") as p2,
+        xnetcdf.Dataset(dataset, backend="scipy") as p1,
+        xnetcdf.Dataset(x, backend="scipy") as p2,
     ):
-        assert p1.backend_api == "netcdf_file"
-        assert p2.backend_api == "netcdf_file"
+        assert p1.backend_api == "scipy"
+        assert p2.backend_api == "scipy"
         assert p1.dump(display=False, data=True) == p2.dump(
             display=False, data=True
         )

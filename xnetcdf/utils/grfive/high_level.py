@@ -43,12 +43,12 @@ class File(Mapping):
         mode: `str`
             The data access mode. Only ``'r'`` (read-only) is allowed.
 
-        profile : str or Profile, default "auto"
-             ``earthkit.data`` ``xr_engine`` profile name or object
-             (e.g. ``"auto"``, ``"grib"``, ``"mars"``, or
-             ``"earthkit"``). When ``"auto"``, selects ``"mars"`` if
-             MARS namespace metadata is present on the first field and
-             ``"grib"`` otherwise.
+        profile : str or `Profile`
+             The `earthkit.data` ``xr_engine`` profile name or object
+             (e.g. ``'auto'``, ``'grib'``, ``'mars'``, or
+             ``'earthkit'``). When ``'auto'`` (the default), selects
+             ``'mars'`` if MARS namespace metadata is present on the
+             first field and ``'grib'`` otherwise.
 
          calendar : str, default "proleptic_gregorian"
              CF calendar name used when encoding datetime coordinates
@@ -65,7 +65,7 @@ class File(Mapping):
 
          source_type: `str`, optional
              Explicit ``earthkit.data.from_source`` source type (such
-             as ``"file"`` or ``"stream"``) to bypass automatic input
+             as ``'file'`` or ``'stream'``) to bypass automatic input
              type detection.
 
          squeezed: `bool`, optional
@@ -74,10 +74,27 @@ class File(Mapping):
              the data variables data array. If False then keep them in
              the data array.
 
+         verbose: `int`, optional
+             Set the verbosity. If *verbose* is ``0`` there is no
+             verbose output, and more output is produced for
+             progressively larger values of *verbose*. Values of ``1``
+             and higher (or the value ``-1``) produce the same
+             maximally verbose output.
+
          earthkit_options: `str`
              Keyword arguments that are passed to
              `earthkit.data.from_source`. Setting to `None` (the
              default) is equivalent to providing an empty dictionary.
+
+             THe special key ``'BackendDataBuilder_options'`` with a
+             dictionary value is for options additional keyword
+             arguments forwarded to
+             `earthkit.data.xr_engine.builder.BackendDataBuilder` (via
+             `SingleDatasetBuilder`), such as ``lazy_load=False``,
+             ``allow_holes=True``, ``rename_dims=...``, or
+             ``add_earthkit_attrs=True`` (which defaults to False
+             here). Do not pass ``'squeeze'`` here; use the dedicated
+             *squeeze* parameter instead.
 
     """
 
@@ -90,10 +107,9 @@ class File(Mapping):
         calendar="proleptic_gregorian",
         decreasing_atmos_pressure=True,
         squeeze=True,
+            verbose=1,
         **earthkit_options,
     ):
-        import earthkit.data as ekd
-
         if mode != "r":
             raise ValueError(
                 f"{self.__class__.__name__} only supports read-only mode='r'"
@@ -102,8 +118,16 @@ class File(Mapping):
         try:
             self.filename = str(Path(filename))
         except TypeError:
-            self.filename = filename.path
+            try:
+                self.filename = str(filename.path)
+            except AttributeError:
+                self.filename = "<file-like>"
 
+                
+        mapping_options = earthkit_options.pop('mapping_options', {})
+        profile_options = earthkit_options.pop('profile_options', {})
+        source_options = earthkit_options
+        
         options = {
             "profile": profile,
             "source_type": source_type,
@@ -111,16 +135,16 @@ class File(Mapping):
             "decreasing_atmos_pressure": decreasing_atmos_pressure,
             "squeeze": squeeze,
             "source_kwargs": earthkit_options,
+            "profile_kwargs": profile_options,
         }
-
-        ds = ekd.from_source("file", self.filename)
-        d = grib_to_flat_netcdf_spec(ds, **options)
-
         self.options = options
 
-        import pprint
+        d = grib_to_flat_netcdf_spec(filename, **options)
 
-        pprint.pprint(d)
+        if verbose > 0 or verbose == -1:
+            import pprint
+
+            pprint.pprint(d)
 
         self.mode = mode
         self.parent = None
