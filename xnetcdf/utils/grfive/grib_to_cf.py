@@ -44,7 +44,24 @@ _VERTICAL_NAMES = {
     "theta",
 }
 _LEVEL_TYPE_NAMES = ("level_type", "levtype")
-_HORIZONTAL_1D_BOUNDS_NAMES = {"latitude", "longitude", "x", "y"}
+_HORIZONTAL_1D_BOUNDS_NAMES = {
+    "latitude",
+    "longitude",
+    "grid_latitude",
+    "grid_longitude",
+    "projection_x_coordinate",
+    "projection_y_coordinate",
+    "x",
+    "y",
+}
+_LATITUDE_LIKE_NAMES = {"latitude", "grid_latitude"}
+
+# GRIB grid types whose 1-d horizontal coordinates are equally spaced
+# cell centres, so that the mid-points between them are valid cell
+# bounds. This is not the case for, e.g., Gaussian grids (whose cell
+# edges are not mid-points) or Mercator (whose latitudes are not equally
+# spaced), so those get no horizontal bounds.
+_MIDPOINT_BOUNDS_GRID_TYPES = {"regular_ll", "rotated_ll"}
 
 _GRIB_STEP_UNITS_TO_SECONDS = {
     0: 60,  # minute
@@ -622,8 +639,9 @@ class LazyTensorArray:
             int(n)
             for n in getattr(self.tensor, "field_shape", self.shape[-2:])
         )
-        n_outer = max(0, self.ndim - len(field_shape))
-        return (1,) * n_outer + field_shape[-self.ndim :]
+        n_field = min(self.ndim, len(field_shape))
+        n_outer = self.ndim - n_field
+        return (1,) * n_outer + field_shape[len(field_shape) - n_field :]
 
     def with_squeezed_axis(self, axis):
         """Return a new `LazyTensorArray` view with *axis* squeezed out.
@@ -2252,8 +2270,8 @@ def _compute_1d_spatial_bounds(name, arr):
     :Parameters:
 
         name: `str`
-            Coordinate name (``"latitude"`` bounds are clipped to
-            ``[-90, 90]``).
+            Coordinate name (``"latitude"`` and ``"grid_latitude"``
+            bounds are clipped to ``[-90, 90]``).
 
         arr: `numpy.ndarray`
             1-d numeric coordinate array of size at least 2.
@@ -2263,7 +2281,7 @@ def _compute_1d_spatial_bounds(name, arr):
         `numpy.ndarray` or `None`
             ``(N, 2)`` array of lower and upper cell edges, or
             ``None`` if ``arr`` is not 1-d, has fewer than 2 finite
-            points, or is non-monotonic.
+            points, is non-monotonic, or is not equally spaced.
 
     """
     if (
@@ -2281,12 +2299,16 @@ def _compute_1d_spatial_bounds(name, arr):
     if not (np.all(diffs > 0) or np.all(diffs < 0)):
         return None
 
+    # Mid-points are only valid cell edges for equally spaced points
+    if not np.allclose(diffs, diffs[0], rtol=1e-3, atol=0):
+        return None
+
     edges = np.empty(vals.size + 1, dtype=np.float64)
     edges[1:-1] = 0.5 * (vals[:-1] + vals[1:])
     edges[0] = vals[0] - 0.5 * diffs[0]
     edges[-1] = vals[-1] + 0.5 * diffs[-1]
 
-    if name == "latitude":
+    if name in _LATITUDE_LIKE_NAMES:
         edges = np.clip(edges, -90.0, 90.0)
 
     if arr.dtype.kind == "f":
@@ -2336,7 +2358,13 @@ def _cf_unit_scale_seconds(units):
     return None
 
 
-def _build_cell_bounds(dimensions, coord_vars, aux_vars, interval_hints):
+def _build_cell_bounds(
+    dimensions,
+    coord_vars,
+    aux_vars,
+    interval_hints,
+    horizontal_bounds=True,
+):
     """Build CF bounds variables for spatial and temporal axes.
 
     Mutates coordinate attribute dictionaries in ``coord_vars`` and
@@ -2357,6 +2385,11 @@ def _build_cell_bounds(dimensions, coord_vars, aux_vars, interval_hints):
         interval_hints: `tuple` of (`dict`, `dict`), optional
             ``(step_intervals_s, level_intervals)`` extracted by
             `_extract_grib_interval_hints`.
+
+        horizontal_bounds: `bool`, default True
+            Whether to create bounds for the 1-d horizontal
+            coordinates. Should only be True if the mid-points
+            between grid points are valid cell edges.
 
     :Returns:
 
@@ -2408,7 +2441,7 @@ def _build_cell_bounds(dimensions, coord_vars, aux_vars, interval_hints):
 
     # Monotonic 1-d horizontal spatial coordinates
     for cname in list(coord_vars.keys()):
-        if cname not in _HORIZONTAL_1D_BOUNDS_NAMES:
+        if not horizontal_bounds or cname not in _HORIZONTAL_1D_BOUNDS_NAMES:
             continue
 
         cdims, arr, _ = coord_vars[cname]
@@ -2554,6 +2587,7 @@ def _apply_cf_polish(
     interval_hints=None,
     calendar=CF_CALENDAR,
     decreasing_atmos_pressure=True,
+    horizontal_bounds=True,
 ):
     """Apply CF encodings.
 
@@ -2600,6 +2634,10 @@ def _apply_cf_polish(
             If True, strictly increasing 1-s pressure axes are
             reversed to decreasing order along with matching variable
             axes.
+
+        horizontal_bounds: `bool`, default True
+            Whether to create bounds for 1-d horizontal coordinates,
+            as determined by `_MIDPOINT_BOUNDS_GRID_TYPES`.
 
     :Returns:
 
@@ -2748,8 +2786,25 @@ def _apply_cf_polish(
 
                 cleaned_data_vars[vname] = (vdims, flipped_data, vattrs)
 
+    # A scalar level_type that could not be folded onto a vertical
+    # coordinate (because there isn't one, as for surface fields)
+    # becomes an attribute of the data variables.
+    for lt_key in _LEVEL_TYPE_NAMES:
+        lt_var = polished_aux_vars.get(lt_key)
+        if lt_var is None or lt_var[0] != ():
+            continue
+
+        lt_val = str(np.asarray(lt_var[1]).item())
+        del polished_aux_vars[lt_key]
+        for vname, (vdims, data, attrs) in cleaned_data_vars.items():
+            attrs.setdefault("level_type", lt_val)
+
     polished_dimensions, bnds_vars, bnds_names = _build_cell_bounds(
-        dimensions, polished_coord_vars, polished_aux_vars, interval_hints
+        dimensions,
+        polished_coord_vars,
+        polished_aux_vars,
+        interval_hints,
+        horizontal_bounds=horizontal_bounds,
     )
     polished_aux_vars.update(bnds_vars)
 
@@ -2801,6 +2856,7 @@ def _apply_cf_polish(
         for _, _, attrs in (
             *polished_coord_vars.values(),
             *polished_aux_vars.values(),
+            *polished_vars.values(),
         )
     ):
         global_attrs.pop("levtype", None)
@@ -2814,6 +2870,181 @@ def _apply_cf_polish(
         data_vars=polished_vars,
         aux_vars=polished_aux_vars,
         global_attrs=global_attrs,
+    )
+
+
+_ROTATED_LL_GRID_MAPPING_NAME = "rotated_latitude_longitude"
+
+
+def _rotated_ll_coordinates(field, nj, ni):
+    """Return the 1-d rotated-grid coordinates of a ``rotated_ll`` field.
+
+    :Parameters:
+
+        field: `earthkit.data.Field`
+            A GRIB field on a ``rotated_ll`` grid.
+
+        nj, ni: `int`
+            The numbers of points along the rotated latitude and
+            longitude axes.
+
+    :Returns:
+
+        `tuple` of `numpy.ndarray`
+            The rotated latitude and longitude values, in degrees,
+            in the same order as the field's data.
+
+    """
+    lat_first = float(_field_meta(field, "latitudeOfFirstGridPointInDegrees"))
+    lat_last = float(_field_meta(field, "latitudeOfLastGridPointInDegrees"))
+    lon_first = float(_field_meta(field, "longitudeOfFirstGridPointInDegrees"))
+    lon_last = float(_field_meta(field, "longitudeOfLastGridPointInDegrees"))
+
+    # Along-row longitudes may cross the 360 degree wrap
+    if _field_meta(field, "iScansNegatively"):
+        if lon_last > lon_first:
+            lon_last -= 360.0
+    elif lon_last < lon_first:
+        lon_last += 360.0
+
+    return (
+        np.linspace(lat_first, lat_last, nj),
+        np.linspace(lon_first, lon_last, ni),
+    )
+
+
+def _apply_grid_mapping(spec, ds):
+    """Add CF grid mapping information for supported rotated grids.
+
+    Currently handles GRIB ``rotated_ll`` grids, for which the
+    horizontal dimensions are renamed to ``grid_latitude`` and
+    ``grid_longitude``, 1-d rotated coordinate variables are created,
+    and a ``rotated_latitude_longitude`` grid mapping variable is
+    added and referenced by the data variables' ``grid_mapping``
+    attribute. The 2-d true latitude and longitude auxiliary
+    coordinates are removed, because they are not stored in the GRIB
+    messages (they are computed by `earthkit`) and are fully defined
+    by the rotated coordinates and the grid mapping. Specs on other
+    grids are returned unchanged.
+
+    The GRIB south pole of rotation ``(lat_s, lon_s)`` is converted to
+    the CF north pole ``(-lat_s, lon_s + 180)``, with
+    ``north_pole_grid_longitude`` taken from ``angleOfRotation``.
+
+    :Parameters:
+
+        spec: `FlatNetCDFSpec`
+            The CF normalised specification.
+
+        ds: `earthkit.data.FieldList`
+            The source of *spec*, of which only the first field is
+            inspected.
+
+    :Returns:
+
+        `FlatNetCDFSpec`
+
+    """
+    field = ds[0]
+    if _field_meta(field, "gridType") != "rotated_ll":
+        return spec
+
+    lat_dims = spec.aux_vars.get("latitude", ((),))[0]
+    lon_dims = spec.aux_vars.get("longitude", ((),))[0]
+    if len(lat_dims) != 2 or lat_dims != lon_dims:
+        return spec
+
+    ydim, xdim = lat_dims
+    rlat, rlon = _rotated_ll_coordinates(
+        field, spec.dimensions[ydim], spec.dimensions[xdim]
+    )
+
+    south_lat = float(_field_meta(field, "latitudeOfSouthernPoleInDegrees"))
+    south_lon = float(_field_meta(field, "longitudeOfSouthernPoleInDegrees"))
+    angle = _field_meta(field, "angleOfRotationInDegrees")
+    gm_attrs = {
+        "grid_mapping_name": _ROTATED_LL_GRID_MAPPING_NAME,
+        "grid_north_pole_latitude": -south_lat,
+        "grid_north_pole_longitude": (south_lon + 360.0) % 360.0 - 180.0,
+        "north_pole_grid_longitude": float(angle or 0.0),
+    }
+    gm_name = _unique_name(
+        _ROTATED_LL_GRID_MAPPING_NAME,
+        {*spec.coord_vars, *spec.aux_vars, *spec.data_vars},
+    )
+
+    rename = {ydim: "grid_latitude", xdim: "grid_longitude"}
+    if any(
+        n in spec.dimensions or n in spec.coord_vars
+        for n in rename.values()
+    ):
+        return spec
+
+    def _rename(dims):
+        return tuple(rename.get(d, d) for d in dims)
+
+    dimensions = {rename.get(d, d): n for d, n in spec.dimensions.items()}
+
+    coord_vars = {
+        "grid_latitude": (
+            ("grid_latitude",),
+            rlat,
+            {
+                "standard_name": "grid_latitude",
+                "units": "degrees",
+                "axis": "Y",
+            },
+        ),
+        "grid_longitude": (
+            ("grid_longitude",),
+            rlon,
+            {
+                "standard_name": "grid_longitude",
+                "units": "degrees",
+                "axis": "X",
+            },
+        ),
+        **spec.coord_vars,
+    }
+
+    aux_vars = {
+        k: (_rename(d), v, a)
+        for k, (d, v, a) in spec.aux_vars.items()
+        if k not in ("latitude", "longitude")
+    }
+    aux_vars[gm_name] = ((), np.array(0, dtype="i4"), gm_attrs)
+
+    data_vars = {}
+    for k, (d, v, a) in spec.data_vars.items():
+        d = _rename(d)
+        a = dict(a)
+        if {"grid_latitude", "grid_longitude"}.issubset(d):
+            a["grid_mapping"] = gm_name
+
+        coords = [
+            c for c in a.get("coordinates", "").split()
+            if c not in ("latitude", "longitude")
+        ]
+        if coords:
+            a["coordinates"] = " ".join(coords)
+        else:
+            a.pop("coordinates", None)
+
+        data_vars[k] = (d, v, a)
+
+    # Cell bounds for the new rotated coordinates, assuming that the
+    # grid points are cell centres (as for regular lat/lon grids)
+    dimensions, bnds_vars, _ = _build_cell_bounds(
+        dimensions, coord_vars, aux_vars, None
+    )
+    aux_vars.update(bnds_vars)
+
+    return FlatNetCDFSpec(
+        dimensions=dimensions,
+        coord_vars=coord_vars,
+        data_vars=data_vars,
+        aux_vars=aux_vars,
+        global_attrs=spec.global_attrs,
     )
 
 
@@ -2960,8 +3191,12 @@ def grib_to_flat_netcdf_spec(
         result = builder.build()
         del builder
 
-    return _apply_cf_polish(
+    spec = _apply_cf_polish(
         *result,
         calendar=calendar,
         decreasing_atmos_pressure=decreasing_atmos_pressure,
+        horizontal_bounds=(
+            _field_meta(ds[0], "gridType") in _MIDPOINT_BOUNDS_GRID_TYPES
+        ),
     )
+    return _apply_grid_mapping(spec, ds)
