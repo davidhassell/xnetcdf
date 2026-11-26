@@ -418,7 +418,11 @@ def test_projected_grids_read(data_dir, name):
         (dims, lazy, attrs), = spec.data_vars.values()
         assert dims == ("y", "x")
         assert "grid_mapping" in attrs
-        np.testing.assert_allclose(np.asarray(lazy), ds[0].to_numpy())
+        expected = ds[0].to_numpy()
+        expected = np.where(
+            np.isnan(expected), attrs["_FillValue"], expected
+        )
+        np.testing.assert_allclose(np.asarray(lazy), expected)
 
 
 def test_surface_level_type_is_a_variable_attribute(data_dir):
@@ -608,3 +612,27 @@ def test_rotated_grid_with_rotation_angle_is_unchanged(
     assert "latitude" in {**spec.aux_vars, **spec.coord_vars}
     for _, _, a in spec.data_vars.values():
         assert "grid_mapping" not in a
+
+
+def test_grib_cell_methods_use_existing_time_axis():
+    """cell_methods never names the forecast reference time."""
+    from xnetcdf.utils.grfive.grib_polish import _format_cell_methods
+
+    hints = ("sum", None)
+    assert _format_cell_methods(("forecast_reference_time",), hints) is None
+    assert _format_cell_methods(("y", "x"), hints, ["step"]) == "step: sum"
+    assert _format_cell_methods(("time", "x"), hints, ["step"]) == "time: sum"
+
+
+def test_grib_missing_points_use_fill_value(data_dir):
+    """NaN points are returned as the declared _FillValue."""
+    spec = grib_to_flat_netcdf_spec(
+        str(data_dir / "polar_stereographic_12x10.grib1")
+    )
+    _, data, attrs = spec.data_vars["tp"]
+    fill = attrs["_FillValue"]
+    arr = data[...]
+    assert not np.isnan(arr).any()
+    assert (arr == fill).sum() == 120
+    assert "point" not in attrs.get("cell_methods", "")
+    spec.close()

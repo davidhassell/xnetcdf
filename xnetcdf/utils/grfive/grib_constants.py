@@ -7,7 +7,7 @@ import numpy as np
 
 
 
-CF_CONVENTIONS = "CF-1.14"
+CF_CONVENTIONS = "CF-1.13"
 
 CF_CALENDAR = "proleptic_gregorian"
 
@@ -55,8 +55,8 @@ _LATITUDE_LIKE_NAMES = {"latitude", "grid_latitude"}
 # GRIB grid types whose 1-d horizontal coordinates are equally spaced
 # cell centres, so that the mid-points between them are valid cell
 # bounds. This is not the case for, e.g., Gaussian grids (whose cell
-# edges are not mid-points) or Mercator (whose latitudes are not equally
-# spaced), so those get no horizontal bounds.
+# edges are not mid-points) or Mercator (whose latitudes are not
+# equally spaced), so those get no horizontal bounds.
 _MIDPOINT_BOUNDS_GRID_TYPES = {"regular_ll", "rotated_ll"}
 
 _GRIB_STEP_UNITS_TO_SECONDS = {

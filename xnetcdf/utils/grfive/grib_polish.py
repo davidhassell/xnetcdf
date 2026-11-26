@@ -116,8 +116,14 @@ def _is_pressure_coord(name, attrs):
     )
 
 
-def _format_cell_methods(vdims, hints, coord_vars):
+def _format_cell_methods(vdims, hints, coordinates=()):
     """Format a CF cell_methods string from extracted GRIB hints.
+
+    The temporal method is only emitted if the variable has a time-like
+    dimension or scalar coordinate (``time``, ``valid_time`` or
+    ``step``) to refer to, as required by CF. The forecast reference
+    time is never used, since statistical processing applies to the
+    validity period, not to the analysis time.
 
     :Parameters:
 
@@ -128,9 +134,8 @@ def _format_cell_methods(vdims, hints, coord_vars):
              ``(temporal_cf_method, ensemble_cf_method)`` inferred
              from GRIB keys.
 
-         coord_vars: dict of {str: tuple}
-             Polished dimension coordinates used to locate a
-             ``T``-axis fallback.
+         coordinates: sequence of `str`, optional
+             Names of the variable's scalar and auxiliary coordinates.
 
      :Returns:
 
@@ -147,24 +152,15 @@ def _format_cell_methods(vdims, hints, coord_vars):
     if ensemble_method:
         parts.append(ensemble_method)
 
-    if temporal_method:
-        if "time" in vdims:
-            t_axis = "time"
-        elif "valid_time" in vdims:
-            t_axis = "valid_time"
-        elif "step" in vdims:
-            t_axis = "step"
-        else:
-            t_axis = next(
-                (
-                    d
-                    for d in vdims
-                    if d in coord_vars and coord_vars[d][2].get("axis") == "T"
-                ),
-                "time",
-            )
-
-        parts.append(f"{t_axis}: {temporal_method}")
+    # "point" is the CF default, so it is not recorded
+    if temporal_method and temporal_method != "point":
+        available = {*vdims, *coordinates}
+        t_axis = next(
+            (n for n in ("time", "valid_time", "step") if n in available),
+            None,
+        )
+        if t_axis is not None:
+            parts.append(f"{t_axis}: {temporal_method}")
 
     if parts:
         return " ".join(parts)
@@ -708,7 +704,9 @@ def _apply_cf_polish(
         else:
             cm_hints = None
 
-        cm = _format_cell_methods(vdims, cm_hints, polished_coord_vars)
+        cm = _format_cell_methods(
+            vdims, cm_hints, attrs.get("coordinates", "").split()
+        )
         if cm:
             attrs.setdefault("cell_methods", cm)
 
@@ -733,7 +731,7 @@ def _apply_cf_polish(
         global_attrs.pop("levtype", None)
         global_attrs.pop("level_type", None)
 
-    global_attrs.setdefault("Conventions", CF_CONVENTIONS)
+    global_attrs["Conventions"] = CF_CONVENTIONS
 
     return FlatNetCDFSpec(
         dimensions=polished_dimensions,

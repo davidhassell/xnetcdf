@@ -159,3 +159,20 @@ class FlatNetCDFSpec:
     def __exit__(self, *exc):
         """Exit and close all lazy variable arrays."""
         self.close()
+
+
+def _default_fill_value(dtype):
+    """Return the default netCDF `_FillValue` for a floating dtype.
+
+    :Returns:
+
+        scalar or `None`
+            The netCDF default fill value (``NC_FILL_FLOAT`` or
+            ``NC_FILL_DOUBLE``), or `None` for non-floating dtypes.
+
+    """
+    dtype = np.dtype(dtype)
+    if dtype.kind != "f":
+        return None
+
+    return dtype.type(9.969209968386869e36)

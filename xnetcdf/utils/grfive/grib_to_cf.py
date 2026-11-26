@@ -46,6 +46,7 @@ from .grib_polish import (  # noqa: F401
 from .grib_time import _is_datetime_values, _is_timedelta_values
 from .grib_utils import (  # noqa: F401
     FlatNetCDFSpec,
+    _default_fill_value,
     _field_meta,
     _grid_type,
     _is_time_units,
@@ -473,6 +474,7 @@ class LazyTensorArray:
         squeeze_axes: tuple[int, ...] = (),
         flip_axes: tuple[int, ...] = (),
         lock: _PicklableLock | None = None,
+        fill_value=None,
     ):
         self.tensor = tensor
         self._raw_shape = tuple(shape)
@@ -486,6 +488,7 @@ class LazyTensorArray:
         self.ndim = len(self.shape)
         self.size = math.prod(self.shape)
         self.dtype = np.dtype(dtype)
+        self.fill_value = fill_value
         self.array_namespace = array_namespace
         self._var_name = var_name
         self.lock = lock if lock is not None else _PicklableLock()
@@ -537,6 +540,7 @@ class LazyTensorArray:
             squeeze_axes=(*self.squeeze_axes, raw_axis),
             flip_axes=self.flip_axes,
             lock=self.lock,
+            fill_value=self.fill_value,
         )
 
     def with_flipped_axis(self, axis):
@@ -576,6 +580,7 @@ class LazyTensorArray:
             squeeze_axes=self.squeeze_axes,
             flip_axes=tuple(flipped),
             lock=self.lock,
+            fill_value=self.fill_value,
         )
 
     def close(self):
@@ -797,6 +802,11 @@ class LazyTensorArray:
                 result = result.squeeze(axis=tuple(singles))
 
             arr = np.asarray(result)
+            if self.fill_value is not None and arr.dtype.kind == "f":
+                # Missing GRIB points arrive as NaN; netCDF expects the
+                # `_FillValue` instead
+                arr = np.where(np.isnan(arr), self.fill_value, arr)
+
             if post_flip_axes:
                 arr = np.flip(arr, axis=post_flip_axes)
 
@@ -1037,12 +1047,17 @@ def _get_dataset_builder_cls():
 
             """
             tensor.source = tensor.source.unwrap()
+            fill_value = _default_fill_value(self.dtype)
             if not self.profile.lazy_load:
-                return np.asarray(
+                arr = np.asarray(
                     tensor.to_array(
                         array_namespace=self.array_namespace, dtype=self.dtype
                     )
                 )
+                if fill_value is not None:
+                    arr = np.where(np.isnan(arr), fill_value, arr)
+
+                return arr
 
             return LazyTensorArray(
                 tensor,
@@ -1052,6 +1067,7 @@ def _get_dataset_builder_cls():
                 self.dtype,
                 name,
                 lock=self._lock,
+                fill_value=fill_value,
             )
 
         @staticmethod
@@ -1233,6 +1249,10 @@ def _get_dataset_builder_cls():
 
                 attrs.update(vb.fixed_local_attrs)
                 data = vb.data_maker(vb.tensor, vb.var_dims, vb.name)
+                fill_value = _default_fill_value(data.dtype)
+                if fill_value is not None:
+                    attrs.setdefault("_FillValue", fill_value)
+
                 vname = _unique_name(
                     self.profile.variable.rename(k), used_raw_vars
                 )
