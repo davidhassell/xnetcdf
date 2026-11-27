@@ -10,8 +10,9 @@ from .variable import DataVariable, DimensionScale, Variable
 class File(Mapping):
     """Read a GRIB file.
 
-    2-d "slices" within a single file are always combined, where
-    possible, into fields with N-d data
+    The fields of the file are combined, where possible, into
+    variables with N-d data, and described with CF metadata. See
+    `grib_to_flat_netcdf_spec` for the details of how.
 
     :CF mappings:
 
@@ -23,80 +24,82 @@ class File(Mapping):
 
     :Performance:
 
-    The read of the dataset is lazy in that only the metadata
-    (i.e. the lookup headers and any extra data) are accessed during
-    the initial read. A data array in the dataset is then accessed on
-    demand, and then only for the part of the data array requested by
-    the indexing.
+    The read of the dataset is lazy in that only the metadata are
+    read during the initial read. A data array in the dataset is then
+    read on demand, and then only the fields needed for the part of
+    the data array requested by the indexing.
 
     :Interoperability:
 
     This class has enough of the `pyfive` API to allow it to be used
-    with the ``'pyfive'`` backed API route through `xnetcdf.Dataset`.
+    by `xnetcdf.Dataset` through its ``'earthkit'`` backend.
 
     :Initialisation:
 
         filename:
-            The definition of the PP or fields file dataset to be
-            read. One of:
+            The GRIB dataset to be read. One of a local path or
+            ``file://`` URI, an ``http(s)://`` or ``ftp://`` URL, an
+            ``fsspec`` URI or ``OpenFile`` object, raw bytes, an open
+            binary stream, an `earthkit.data.FieldList` or ``Source``,
+            or a sequence of ``Field`` objects.
 
         mode: `str`
             The data access mode. Only ``'r'`` (read-only) is allowed.
 
-        profile : str or `Profile`
-             The `earthkit.data` ``xr_engine`` profile name or object
-             (e.g. ``'auto'``, ``'grib'``, ``'mars'``, or
-             ``'earthkit'``). When ``'auto'`` (the default), selects
-             ``'mars'`` if MARS keys (``mars.class`` or ``levtype``)
-             can be read from the first field, which is almost always
-             the case, even for files not made with MARS, and
-             ``'grib'`` otherwise.
+        profile: `str` or `Profile`, default "auto"
+            The `earthkit.data` profile name or object (e.g.
+            ``'auto'``, ``'grib'``, ``'mars'``, or ``'earthkit'``)
+            that decides which GRIB keys become dimensions. When
+            ``'auto'`` (the default), selects ``'mars'`` if MARS keys
+            (``mars.class`` or ``levtype``) can be read from the first
+            field, which is almost always the case, even for files not
+            made with MARS, and ``'grib'`` otherwise.
 
-         calendar : str, default "proleptic_gregorian"
-             CF calendar name used when encoding datetime coordinates
-             into numeric ``'<unit> since YYYY-01-01'``
-             values. Non-default calendars use `cftime` for
-             conversion.
+        source_type: `str`, optional
+            Explicit `earthkit.data.from_source` source type (such as
+            ``'file'`` or ``'stream'``) to bypass automatic input type
+            detection.
 
-         decreasing_atmos_pressure: `bool`
-             If True, 1-d atmospheric pressure coordinates that are
-             strictly increasing (e.g. ``300 -> 1000`` hPa) are
-             reversed to decreasing order (surface-to-top, ``1000 ->
-             300`` hPa), and all variables sharing that dimension are
-             flipped lazily along the corresponding axis.
+        calendar: `str`, default "proleptic_gregorian"
+            CF calendar name used when encoding datetime coordinates
+            into numeric ``'<unit> since YYYY-01-01'`` values.
+            Non-default calendars use `cftime` for conversion.
 
-         source_type: `str`, optional
-             Explicit ``earthkit.data.from_source`` source type (such
-             as ``'file'`` or ``'stream'``) to bypass automatic input
-             type detection.
+        decreasing_atmos_pressure: `bool`, default True
+            If True, 1-d atmospheric pressure coordinates that are
+            strictly increasing (e.g. ``300 -> 1000`` hPa) are
+            reversed to decreasing order (surface-to-top, ``1000 ->
+            300`` hPa), and all variables sharing that dimension are
+            flipped lazily along the corresponding axis.
 
-         squeeze: `bool`, optional
-             If True (the default) then drop size 1, non-horizontal
-             dimensions (such as time, step, level, number, etc.) from
-             the data variables data array. If False then keep them in
-             the data array.
+        squeeze: `bool` or `None`, default True
+            If True then drop size 1, non-horizontal dimensions (such
+            as ``forecast_reference_time``, ``step``, ``level`` or
+            ``member``) from the data variables' data arrays, and
+            keep their coordinates as scalars. If False then keep
+            them in the data arrays. If `None`, resolves to False for
+            the ``'earthkit'`` profile and True otherwise.
 
-         verbose: `int`, optional
-             Set the verbosity. If *verbose* is ``0`` there is no
-             verbose output, and more output is produced for
-             progressively larger values of *verbose*. Values of ``1``
-             and higher (or the value ``-1``) produce the same
-             maximally verbose output.
+        verbose: `int`, optional
+            Set the verbosity. If *verbose* is ``0`` there is no
+            verbose output, and more output is produced for
+            progressively larger values of *verbose*. Values of ``1``
+            and higher (or the value ``-1``) produce the same
+            maximally verbose output.
 
-         source_kwargs: `dict`, optional
-             Keyword arguments that are passed to
-             `earthkit.data.from_source`. Setting to `None` (the
-             default) is equivalent to providing an empty dictionary.
+        source_kwargs: `dict`, optional
+            Keyword arguments that are passed to
+            `earthkit.data.from_source`. Setting to `None` (the
+            default) is equivalent to providing an empty dictionary.
 
-         profile_kwargs: `dict`, optional
-             Keyword arguments that are passed to the `earthkit.data`
-             ``xr_engine`` `Profile`, such as ``lazy_load=False``,
-             ``allow_holes=True``, ``rename_dims=...``,
-             ``extra_dims=...`` or ``add_earthkit_attrs=True`` (which
-             defaults to False here). Do not pass ``'squeeze'``
-             here; use the dedicated *squeeze* parameter
-             instead. Setting to `None` (the default) is equivalent
-             to providing an empty dictionary.
+        profile_kwargs: `dict`, optional
+            Keyword arguments for the `earthkit.data` profile, such
+            as ``lazy_load=False``, ``allow_holes=True``,
+            ``rename_dims=...``, ``extra_dims=...`` or
+            ``add_earthkit_attrs=True`` (which defaults to False
+            here). Do not pass ``'squeeze'`` here; use the dedicated
+            *squeeze* parameter instead. Setting to `None` (the
+            default) is equivalent to providing an empty dictionary.
 
     """
 
@@ -138,6 +141,7 @@ class File(Mapping):
         self.options = options
 
         d = grib_to_flat_netcdf_spec(filename, **options)
+        self._spec = d
 
         if verbose > 0 or verbose == -1:
             import pprint
@@ -241,18 +245,10 @@ class File(Mapping):
     def variables(self):
         """All (data and metadata) variables.
 
-        .. seealso:: `dimension_variables`, `data_variables`,
-                     `metadata_variables`
-
         :Returns:
 
             `dict`
                 The variables, keyed by their names.
-
-        :Examples:
-
-        >>> u.variables
-        TODOx
 
         """
         return self._all_variables
@@ -282,21 +278,21 @@ class File(Mapping):
             `int`
 
         """
-        return
+        return 0
 
     def close(self):
-        """Close the underlying dataset reader.
+        """Close the dataset.
 
-        However, the reader is not closed if it was opened externally,
-        i.e. if the *filename* argument to `File` was a file-like
-        object.
+        The data of the data variables are released, so they can't be
+        read once the dataset is closed. This does not close any
+        underlying GRIB file, because that is managed by `earthkit`.
 
         :Returns:
 
             `None`
 
         """
-        pass
+        self._spec.close()
 
     def items(self):
         """A set-like object providing a view on the dataset's items."""

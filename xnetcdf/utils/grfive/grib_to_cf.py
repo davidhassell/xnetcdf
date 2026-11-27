@@ -2058,10 +2058,10 @@ def grib_to_flat_netcdf_spec(
 ):
     """Convert GRIB data into a CF compliant `FlatNetCDFSpec`.
 
-    Parses GRIB messages via `earthkit.data`'s ``xr_engine`` builder
-    without requiring ``xarray`` or ``dask``, wrapping lazy variable
-    arrays in `LazyTensorArray` instances for on-demand slicing and
-    applying a CF metadata and coordinate normalization pass.
+    The GRIB messages are read with `earthkit.data`. Variable data
+    are not read until requested: each is a `LazyTensorArray` that
+    reads only the fields that a slice needs. The metadata and
+    coordinates are then made CF compliant (see the notes).
 
     :Parameters:
 
@@ -2073,13 +2073,13 @@ def grib_to_flat_netcdf_spec(
             sequence of ``Field`` objects.
 
         profile: `str` or Profile, default "auto"
-             The `earthkit.data` ``xr_engine`` profile name or object
-             (e.g. ``'auto'``, ``'grib'``, ``'mars'``, or
-             ``'earthkit'``). When ``'auto'`` (the default), selects
-             ``'mars'`` if MARS keys (``mars.class`` or ``levtype``)
-             can be read from the first field, which is almost always
-             the case, even for files not made with MARS, and
-             ``'grib'`` otherwise.
+             The `earthkit.data` profile name or object (e.g.
+             ``'auto'``, ``'grib'``, ``'mars'``, or ``'earthkit'``)
+             that decides which GRIB keys become dimensions. When
+             ``'auto'`` (the default), selects ``'mars'`` if MARS keys
+             (``mars.class`` or ``levtype``) can be read from the
+             first field, which is almost always the case, even for
+             files not made with MARS, and ``'grib'`` otherwise.
 
         calendar: `str`, default "proleptic_gregorian"
             CF calendar name used when encoding datetime coordinates
@@ -2094,18 +2094,18 @@ def grib_to_flat_netcdf_spec(
             300`` hPa), and all variables sharing that dimension are
             flipped lazily along the corresponding axis.
 
-        squeeze: `bool`, optional
+        squeeze: `bool` or `None`, default True
             Whether to drop size 1, non-horizontal dimensions (such as
-            ``time``, ``step``, ``level``, or ``number``) and demote
-            their coordinates to scalar entries in
-            ``aux_vars``. Horizontal grid dimensions (e.g.
+            ``forecast_reference_time``, ``step``, ``level``, or
+            ``member``) and demote their coordinates to scalar
+            entries in ``aux_vars``. Horizontal grid dimensions (e.g.
             ``latitude``, ``longitude``, ``x``, ``y``, ``values``) are
-            never squeezed, even when of size 1. If ``None``
-            (default), resolves to False for the ``"earthkit"``
-            profile and True otherwise (e.g.  for ``"grib"`` and
-            ``"mars"``). Singleton ``level_type`` / ``levtype``
-            dimensions are always squeezed and folded onto the
-            vertical coordinate as a ``level_type`` attribute.
+            never squeezed, even when of size 1. If `None`, resolves
+            to False for the ``"earthkit"`` profile and True
+            otherwise (e.g. for ``"grib"`` and ``"mars"``). Singleton
+            ``level_type`` / ``levtype`` dimensions are always
+            squeezed and folded onto the vertical coordinate as a
+            ``level_type`` attribute.
 
         source_type: `str`, optional
             Explicit `earthkit.data.from_source` source type (such as
@@ -2116,31 +2116,22 @@ def grib_to_flat_netcdf_spec(
             Additional keyword arguments forwarded to
             `earthkit.data.from_source`.
 
-        profile_kwargs
-            Additional keyword arguments forwarded to
-            `earthkit.data.xr_engine.profile.Profile` via
-            `SingleDatasetBuilder` (for example ``lazy_load=False``,
-            ``allow_holes=True``, ``rename_dims=...``, or
-            ``add_earthkit_attrs=True``, which defaults to False
-            here). Do not pass ``'squeeze'`` here; use the dedicated
-            *squeeze* parameter instead.
-    
+        profile_kwargs: `dict`, optional
+            Additional keyword arguments for the `earthkit.data`
+            profile (for example ``lazy_load=False``,
+            ``extra_dims=...``, ``allow_holes=True``,
+            ``rename_dims=...``, or ``add_earthkit_attrs=True``,
+            which defaults to False here). Do not pass ``'squeeze'``
+            here; use the dedicated *squeeze* parameter instead. The
+            dictionary is not modified.
+
     :Returns:
 
         `FlatNetCDFSpec`
-            Immutable specification containing:
-
-            * ``dimensions``: mapping of dimension names to sizes.
-            * ``coord_vars``: 1-d numeric dimension coordinates as
-              ``(dims, ndarray, attrs)``.
-            * ``data_vars``: data variables as ``(dims, array_like,
-              attrs)``, where ``array_like`` is a `LazyTensorArray`
-              when ``lazy_load=True`` or a concrete `numpy.ndarray`
-              otherwise.
-            * ``aux_vars``: scalar, multi-dimensional, string, and
-              ``*_bnds`` auxiliary coordinates as ``(dims, ndarray,
-              attrs)``.
-            * ``global_attrs``: sanitized netCDF global attributes.
+            A flat description of the dataset as netCDF dimensions,
+            coordinate, auxiliary and data variables, and global
+            attributes. The data variables are lazy. It is a context
+            manager that releases the data when it is closed.
 
     :Notes:
 
@@ -2148,7 +2139,10 @@ def grib_to_flat_netcdf_spec(
 
     * Encodes ``datetime64`` / ``datetime`` values as CF numeric time
       offsets (auto-selecting ``days``, ``hours``, or ``seconds``) and
-      ``timedelta`` values as integer ``hours`` or ``seconds``.
+      ``timedelta`` values as integer ``hours`` or ``seconds``. A
+      ``time`` auxiliary coordinate for the validity time (forecast
+      reference time plus step) is added when there is not already
+      one.
 
     * Populates CF ``axis`` (``X``, ``Y``, ``Z``, ``T``) and vertical
       ``positive`` (``"down"`` for pressure/depth, ``"up"`` for
@@ -2156,14 +2150,37 @@ def grib_to_flat_netcdf_spec(
       vertical coordinates as ``level_type``.
 
     * Generates CF ``*_bnds`` boundary variables and ``bounds`` links
-      for monotonic 1-d spatial axes, GRIB ``startStep``/``endStep``
-      intervals, and multi-layer vertical levels
-      (``topLevel``/``bottomLevel``).
+      for monotonic 1-d spatial axes, for the GRIB
+      ``startStep``/``endStep`` intervals of each variable, and for
+      layers (``topLevel``/``bottomLevel``, or the GRIB2 bounding
+      surfaces). The value of a layer coordinate is the midpoint of
+      its bounds. A single level or layer gets a scalar coordinate.
+
+    * Makes the vertical coordinates CF compliant: GRIB2 soil layers
+      get a ``depth`` coordinate in metres, GRIB1 soil depths are
+      labelled in centimetres, and scalar ``level`` coordinates for
+      named surfaces (the earth's surface, the tropopause, etc.) are
+      dropped, since CF encodes those in the standard name.
+      Coordinates whose standard name is listed in
+      `_STANDARD_NAMES_AS_VARIABLE_NAMES` (such as ``height``) are
+      named after it. Increasing pressure coordinates are reversed
+      (see *decreasing_atmos_pressure*).
 
     * Infers ``cell_methods`` from GRIB ``stepType``,
       ``typeOfStatisticalProcessing``, and ``derivedForecast``
       metadata, and links applicable auxiliary coordinates via each
       variable's ``coordinates`` attribute.
+
+    * Adds CF grid mappings for rotated latitude-longitude (regular
+      and reduced Gaussian), projected (Lambert, Lambert azimuthal
+      equal area, polar stereographic and Mercator) and HEALPix
+      grids, in place of the computed latitude and longitude
+      coordinates. Reduced Gaussian grids have a single horizontal
+      ``values`` dimension, with latitude and longitude as auxiliary
+      coordinates.
+
+    * Sets a ``_FillValue``, and returns missing points as that value
+      instead of NaN.
 
     :Examples:
 
