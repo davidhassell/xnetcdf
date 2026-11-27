@@ -33,9 +33,10 @@ dataset:
 - `zarr`
 - `umfive`
 - `netCDF4`
+- `earthkit` (GRIB, see :ref:`GRIB`)
+- `xarray`
 - `scipy.io.netcdf_file`
 - `h5py`
-- `xarray`
 
 By default, `xnetcdf` will attempt to open a dataset with each of
 these backends in turn, in the order given above, returning the

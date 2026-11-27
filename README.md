@@ -143,14 +143,17 @@ for more information and examples.
 `xnetcdf` is tested against Python versions 3.10 to 3.14.  It may
 also work with other Python versions.
 
-The only dependency required run the software, besides Python, is
-`numpy`.
+The only library needed to import `xnetcdf`, besides Python, is
+`numpy`. Each of the backend libraries `pyfive`, `netCDF4`, `zarr`,
+`umfive`, `earthkit-data`, `xarray`, `h5py`, and
+`scipy.io.netcdf_file` is only imported when that backend is used to
+read a dataset, so it is not a problem, in general, if a backend
+library is not importable, as it just reduces the size of the pool of
+backends that are available for reading a dataset.
 
-However, each of the backend libraries `pyfive`, `netCDF4`, `zarr`,
-`scipy.io.netcdf_file`, `xarray`, `umfive`, and `h5py` can only be
-used if it also installed. It is not a problem, in general, if a
-backend library is not installed, as it just reduces the size of the
-pool of backends that are available for reading a dataset.
+Nevertheless, installing `xnetcdf` also installs all of the backend
+libraries, so that any supported format can be read without further
+steps.
 
 ## Installation
 
@@ -158,12 +161,6 @@ xnetcdf can be installed using `pip` using the command:
 
 ``` shell
 $ pip install xnetcdf
-```
-
-or, to also install all of the backend libraries:
-
-``` shell
-$ pip install xnetcdf[all]
 ```
 
 `conda` packages, which also install all of the backend libraries, are

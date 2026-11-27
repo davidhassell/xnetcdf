@@ -11,6 +11,7 @@
    installation
    quickstart
    netcdf_structure
+   grib
    api_reference
    changelog
    contributing

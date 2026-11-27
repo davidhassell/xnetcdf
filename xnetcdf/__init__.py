@@ -1,5 +1,6 @@
 from importlib.metadata import PackageNotFoundError, version
 
+from .utils import grfive
 from .xnetcdf import Dataset, Dimension, Group, Variable, backends
 
 __date__ = "2026-07-01"
