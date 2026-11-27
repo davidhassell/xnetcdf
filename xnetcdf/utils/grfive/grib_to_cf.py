@@ -57,6 +57,28 @@ polish step should be unaffected, but the options in
 on ``xr_engine`` internals; the cost is owning GRIB's edge cases that
 earthkit and cfgrib already handle.
 
+Spike result (Nov 2026, not committed): own dimension discovery in
+about 240 lines, hooked in place of the builder and returning the same
+tuple as ``build()``, passed 147 of 151 tests with the polish step
+unchanged. It still used earthkit's field components
+(``parameter.*``, ``time.*``, ``vertical.*``, ``ensemble.*``),
+``earthkit.data.indexing.tensor.FieldListTensor`` and
+``xr_engine.grid.TensorGrid`` (for lat/lon). The four failures were
+two tests of profile behaviour that don't apply, ``squeeze=False``
+(not implemented), and our GRIB1 cm relabel, which matches earthkit's
+exact attribute strings. Findings:
+
+* Own discovery makes the soil layer retry and `_DroppedFieldsError`
+  unnecessary, but earthkit's ``vertical.layer`` also rounds sub-metre
+  GFS depths, so the raw ``scaledValueOf...`` keys are still needed.
+* Our downstream code depends on earthkit's vocabulary (level type
+  names, standard names, unit strings), which a replacement would have
+  to define itself. This is the main cost.
+* Passing tests are not parity: not covered were profiles and
+  ``earthkit_options``, ``allow_holes``, ``level_per_type``, global
+  attributes, sparse cubes and unusual step layouts, and our test data
+  is thin.
+
 """
 
 from __future__ import annotations
