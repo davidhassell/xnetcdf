@@ -27,6 +27,7 @@ dynamic = [
 dependencies = [
     "numpy>=2.0.0",
     "netCDF4",
+    "cftime",
     "fsspec",
     "h5py",
     "scipy",

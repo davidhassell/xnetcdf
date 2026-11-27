@@ -11,6 +11,7 @@ dependencies:
   # all backends
   - fsspec
   - netCDF4
+  - cftime
   - h5py
   - scipy
   - pyfive >=1.3.1
