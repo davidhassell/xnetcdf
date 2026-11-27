@@ -545,6 +545,18 @@ class LazyTensorArray:
         self._var_name = var_name
         self.lock = lock if lock is not None else _PicklableLock()
 
+    def __getstate__(self):
+        # Array namespace objects hold a module, so pickle them by name
+        state = self.__dict__.copy()
+        namespace = state["array_namespace"]
+        state["array_namespace"] = getattr(
+            namespace, "_earthkit_array_namespace_name", namespace
+        )
+        return state
+
+    def __setstate__(self, state):
+        self.__dict__.update(state)
+
     @property
     def nbytes(self):
         """Total uncompressed size in bytes of the full array."""

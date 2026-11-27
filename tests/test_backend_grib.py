@@ -179,6 +179,22 @@ def test_lazy_tensor_array_lock_pickles():
     assert copy._lock is lock._lock
 
 
+def test_lazy_tensor_array_pickles(data_dir):
+    """A whole LazyTensorArray survives pickling and reads the same."""
+    import pickle
+
+    spec, arr, full = _first_lazy(data_dir)
+    with spec:
+        copy = pickle.loads(pickle.dumps(arr))
+        assert copy.shape == arr.shape
+        assert copy.dtype == arr.dtype
+        np.testing.assert_allclose(np.asarray(copy), full)
+        np.testing.assert_allclose(copy[0], full[0])
+
+        # The unpickled copy still shares the source's lock
+        assert copy.lock._lock is arr.lock._lock
+
+
 def _first_lazy(data_dir):
     dataset = data_dir / "tuv_pl.grib"
     ds = ekd.from_source("file", str(dataset)).to_fieldlist()
