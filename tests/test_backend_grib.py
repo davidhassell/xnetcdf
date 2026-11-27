@@ -195,6 +195,27 @@ def test_lazy_tensor_array_pickles(data_dir):
         assert copy.lock._lock is arr.lock._lock
 
 
+@pytest.mark.parametrize("scheduler", ["threads", "synchronous"])
+def test_lazy_tensor_array_as_dask_array(data_dir, scheduler):
+    """A dask array made from a LazyTensorArray computes correctly."""
+    da = pytest.importorskip("dask.array")
+
+    ds = ekd.from_source("file", str(data_dir / "example.grib"))
+    with grib_to_flat_netcdf_spec(ds.to_fieldlist()) as spec:
+        for _, arr, _ in spec.data_vars.values():
+            full = np.asarray(arr)
+            # Natural chunks, chunks that split fields, and one chunk
+            for chunks in (arr.chunks, (1,) * (arr.ndim - 1) + (2,), arr.shape):
+                d = da.from_array(arr, chunks=chunks)
+                result = d.compute(scheduler=scheduler)
+                np.testing.assert_array_equal(result, full)
+
+            d = da.from_array(arr, chunks=(1,) * arr.ndim)
+            np.testing.assert_array_equal(
+                d[::-1].compute(scheduler=scheduler), full[::-1]
+            )
+
+
 def _first_lazy(data_dir):
     dataset = data_dir / "tuv_pl.grib"
     ds = ekd.from_source("file", str(dataset)).to_fieldlist()

@@ -9,7 +9,6 @@ dependencies:
   - numpy >=2
   - python >=3.11  # pinned Zarr, pyfive and umfive
   # all backends
-  - dask
   - fsspec
   - netCDF4
   - h5py
@@ -21,6 +20,7 @@ dependencies:
   - earthkit-data >=1.0.0
   - pyproj
   # testing and linting
+  - dask
   - h5netcdf
   - pre-commit  # with ruff and mypy
   - pytest
