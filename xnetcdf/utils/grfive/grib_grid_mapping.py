@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import numpy as np
 
-from .grib_polish import (_build_cell_bounds)
-from .grib_utils import (FlatNetCDFSpec, _field_meta, _unique_name, _grid_type)
+from .grib_cf_metadata import (_build_cell_bounds)
+from .netcdf_dataset import NetCDFDataset
+from .grib_utils import (_field_meta, _unique_name, _grid_type)
 
 
 _ROTATED_LL_GRID_MAPPING_NAME = "rotated_latitude_longitude"
@@ -123,7 +124,7 @@ def _replace_true_lat_lon_with_grid_mapping(spec, gm_name, gm_attrs):
 
         data_vars[k] = (d, v, a)
 
-    return FlatNetCDFSpec(
+    return NetCDFDataset(
         dimensions=spec.dimensions,
         coord_vars=spec.coord_vars,
         data_vars=data_vars,
@@ -427,7 +428,7 @@ def _apply_projected_grid_mapping(spec, field):
     )
     aux_vars.update(bnds_vars)
 
-    return FlatNetCDFSpec(
+    return NetCDFDataset(
         dimensions=dimensions,
         coord_vars=coord_vars,
         data_vars=data_vars,
@@ -489,7 +490,7 @@ def _apply_healpix_grid_mapping(spec, field):
         ),
         **{k: (_rename(d), v, a) for k, (d, v, a) in spec.coord_vars.items()},
     }
-    return FlatNetCDFSpec(
+    return NetCDFDataset(
         dimensions=dimensions,
         coord_vars=coord_vars,
         data_vars={
@@ -545,7 +546,7 @@ def _apply_grid_mapping(spec, ds):
 
     :Parameters:
 
-        spec: `FlatNetCDFSpec`
+        spec: `NetCDFDataset`
             The CF normalised specification.
 
         ds: `earthkit.data.FieldList`
@@ -554,7 +555,7 @@ def _apply_grid_mapping(spec, ds):
 
     :Returns:
 
-        `FlatNetCDFSpec`
+        `NetCDFDataset`
 
     """
     field = ds[0]
@@ -653,7 +654,7 @@ def _apply_grid_mapping(spec, ds):
     )
     aux_vars.update(bnds_vars)
 
-    return FlatNetCDFSpec(
+    return NetCDFDataset(
         dimensions=dimensions,
         coord_vars=coord_vars,
         data_vars=data_vars,

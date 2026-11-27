@@ -2,7 +2,7 @@
 
 This module wraps `earthkit.data`'s ``xr_engine`` builder to extract
 GRIB metadata, coordinates, and deferred `numpy` array views
-(`LazyTensorArray`) into a `FlatNetCDFSpec` without importing
+(`LazyTensorArray`) into a `NetCDFDataset` without importing
 ``xarray`` or ``dask``.
 
 Use of ``xr_engine``
@@ -23,7 +23,7 @@ files: **dimension discovery**. Given a `FieldList` it:
 
 Everything else is ours: the CF conventions (names, attributes,
 bounds, cell methods, grid mappings, valid time, time encoding), in
-`grib_polish`, `grib_time` and `grib_grid_mapping`, and the lazy,
+`grib_cf_metadata`, `grib_time` and `grib_grid_mapping`, and the lazy,
 thread-safe array access in `LazyTensorArray`. ``xr_engine``'s xarray
 backend (``engine.py``) is not used at all. Under the GRIB tests only
 about 1400 statements of ``xr_engine`` run, against several thousand
@@ -52,14 +52,14 @@ If replacing ``xr_engine``: keep earthkit for reading fields
 (``metadata``, ``values``, ``to_latlon``) and write our own strict
 dimension discovery (variables, a fixed set of dimension keys, a
 complete grid). Everything downstream of `LazyTensorArray` and the
-polish step should be unaffected, but the options in
+CF metadata step should be unaffected, but the options in
 ``earthkit_options['profile']`` would go. The benefit is no dependence
 on ``xr_engine`` internals; the cost is owning GRIB's edge cases that
 earthkit and cfgrib already handle.
 
 Spike result (Nov 2026, not committed): own dimension discovery in
 about 240 lines, hooked in place of the builder and returning the same
-tuple as ``build()``, passed 147 of 151 tests with the polish step
+tuple as ``build()``, passed 147 of 151 tests with the CF metadata step
 unchanged. It still used earthkit's field components
 (``parameter.*``, ``time.*``, ``vertical.*``, ``ensemble.*``),
 ``earthkit.data.indexing.tensor.FieldListTensor`` and
@@ -113,14 +113,14 @@ from .grib_grid_mapping import (  # noqa: F401
     _apply_grid_mapping,
     _projected_grid_definition,
 )
-from .grib_polish import (  # noqa: F401
-    _apply_cf_polish,
+from .grib_cf_metadata import (  # noqa: F401
+    _apply_cf_metadata,
     _build_cell_bounds,
     _compute_1d_spatial_bounds,
 )
 from .grib_time import _is_datetime_values, _is_timedelta_values
+from .netcdf_dataset import NetCDFDataset  # noqa: F401
 from .grib_utils import (  # noqa: F401
-    FlatNetCDFSpec,
     _default_fill_value,
     _field_meta,
     _grid_type,
@@ -1026,11 +1026,11 @@ def _resolve_profile(ds, profile):
 
 @lru_cache(maxsize=1)
 def _get_dataset_builder_cls():
-    """Construct and cache the `FlatNetCDFDatasetBuilder` class.
+    """Construct and cache the `NetCDFDatasetBuilder` class.
 
     :Returns:
 
-            Cached `FlatNetCDFDatasetBuilder` subclass of
+            Cached `NetCDFDatasetBuilder` subclass of
             `earthkit.data.xr_engine.builder.SingleDatasetBuilder`.
 
     """
@@ -1049,7 +1049,7 @@ def _get_dataset_builder_cls():
         SingleDatasetBuilder,
     )
 
-    class FlatNetCDFBackendDataBuilder(BackendDataBuilder):
+    class NetCDFBackendDataBuilder(BackendDataBuilder):
         """Backend builder.
 
         Backend builder producing plain dictionaries and
@@ -1060,7 +1060,7 @@ def _get_dataset_builder_cls():
         def __init__(
             self, *args, squeeze_singletons=False, lock=None, **kwargs
         ):
-            """Initialise the flat netCDF backend data builder.
+            """Initialise the netCDF backend data builder.
 
             :Parameters:
 
@@ -1313,7 +1313,7 @@ def _get_dataset_builder_cls():
                      dedup_data_vars, dedup_aux_vars, global_attrs,
                      var_orig_dims, coord_orig_dims, raw_cell_methods,
                      (var_step_intervals, level_intervals))`` ready for
-                     `_apply_cf_polish`.
+                     `_apply_cf_metadata`.
 
             """
             if self.profile.allow_holes:
@@ -1547,9 +1547,9 @@ def _get_dataset_builder_cls():
                 (var_step_intervals, level_intervals),
             )
 
-    class FlatNetCDFDatasetBuilder(SingleDatasetBuilder):  # noqa :D209
+    class NetCDFDatasetBuilder(SingleDatasetBuilder):  # noqa :D209
         """`SingleDatasetBuilder` subclass wired to
-        `FlatNetCDFBackendDataBuilder`."""
+        `NetCDFBackendDataBuilder`."""
 
         def __init__(
             self, ds, profile="auto", backend_kwargs=None, lock=None, **kwargs
@@ -1593,14 +1593,14 @@ def _get_dataset_builder_cls():
             else:
                 squeeze_singletons = profile_name != "earthkit"
 
-            self.builder = lambda *a, **kw: FlatNetCDFBackendDataBuilder(
+            self.builder = lambda *a, **kw: NetCDFBackendDataBuilder(
                 *a,
                 squeeze_singletons=squeeze_singletons,
                 lock=lock,
                 **kw,
             )
 
-    return FlatNetCDFDatasetBuilder
+    return NetCDFDatasetBuilder
 
 
 _LAND_LAYER_KEY = "scaledValueOfFirstFixedSurface"
@@ -1626,19 +1626,19 @@ def _layer_dimension_to_depth(spec):
     """Turn a dimension of GRIB2 land layers into a depth coordinate.
 
     The dimension was made by `earthkit` from the scaled value of the
-    first fixed surface (see `grib_to_flat_netcdf_spec`). Its
+    first fixed surface (see `grib_to_netcdf_dataset`). Its
     coordinate is replaced by a depth coordinate, in metres, with the
     layer bounds. It is then named by
     `_name_coordinates_after_standard_names`.
 
     :Parameters:
 
-        spec: `FlatNetCDFSpec`
+        spec: `NetCDFDataset`
             The CF normalised specification, modified in place.
 
     :Returns:
 
-        `FlatNetCDFSpec`
+        `NetCDFDataset`
             The modified *spec*.
 
     """
@@ -1741,12 +1741,12 @@ def _drop_non_cf_scalar_levels(spec):
 
     :Parameters:
 
-        spec: `FlatNetCDFSpec`
+        spec: `NetCDFDataset`
             Modified in place.
 
     :Returns:
 
-        `FlatNetCDFSpec`
+        `NetCDFDataset`
             The modified *spec*.
 
     """
@@ -1782,7 +1782,7 @@ def _drop_rounded_scalar_depth(spec, vdims, attrs, tensor):
 
     :Parameters:
 
-        spec: `FlatNetCDFSpec`
+        spec: `NetCDFDataset`
             Modified in place.
 
         vdims: `tuple` of `str`
@@ -1849,7 +1849,7 @@ def _apply_vertical_fixes(spec, ds):
 
     :Parameters:
 
-        spec: `FlatNetCDFSpec`
+        spec: `NetCDFDataset`
             The CF normalised specification, modified in place.
 
         ds: `earthkit.data.FieldList`
@@ -1857,7 +1857,7 @@ def _apply_vertical_fixes(spec, ds):
 
     :Returns:
 
-        `FlatNetCDFSpec`
+        `NetCDFDataset`
             The modified *spec*.
 
     """
@@ -1981,12 +1981,12 @@ def _name_coordinates_after_standard_names(spec):
 
     :Parameters:
 
-        spec: `FlatNetCDFSpec`
+        spec: `NetCDFDataset`
             The CF normalised specification, modified in place.
 
     :Returns:
 
-        `FlatNetCDFSpec`
+        `NetCDFDataset`
             The modified *spec*.
 
     """
@@ -2046,7 +2046,7 @@ def _name_coordinates_after_standard_names(spec):
     return spec
 
 
-def grib_to_flat_netcdf_spec(
+def grib_to_netcdf_dataset(
     ds,
     profile="auto",
     calendar=CF_CALENDAR,
@@ -2056,7 +2056,7 @@ def grib_to_flat_netcdf_spec(
     source_kwargs=None,
     profile_kwargs=None,
 ):
-    """Convert GRIB data into a CF compliant `FlatNetCDFSpec`.
+    """Convert GRIB data into a CF compliant `NetCDFDataset`.
 
     The GRIB messages are read with `earthkit.data`. Variable data
     are not read until requested: each is a `LazyTensorArray` that
@@ -2127,8 +2127,8 @@ def grib_to_flat_netcdf_spec(
 
     :Returns:
 
-        `FlatNetCDFSpec`
-            A flat description of the dataset as netCDF dimensions,
+        `NetCDFDataset`
+            A description of the dataset as netCDF dimensions,
             coordinate, auxiliary and data variables, and global
             attributes. The data variables are lazy. It is a context
             manager that releases the data when it is closed.
@@ -2184,7 +2184,7 @@ def grib_to_flat_netcdf_spec(
 
     :Examples:
 
-    >>> with grib_to_flat_netcdf_spec("tuv_pl.grib", squeeze=True) as spec:
+    >>> with grib_to_netcdf_dataset("tuv_pl.grib", squeeze=True) as spec:
     ...     spec.dimensions
     ...     t_dims, t_lazy, t_attrs = spec.data_vars["t"]
     ...     first_slice = t_lazy[0, 0]
@@ -2236,7 +2236,7 @@ def grib_to_flat_netcdf_spec(
 
         del builder
 
-    spec = _apply_cf_polish(
+    spec = _apply_cf_metadata(
         *result,
         calendar=calendar,
         decreasing_atmos_pressure=decreasing_atmos_pressure,

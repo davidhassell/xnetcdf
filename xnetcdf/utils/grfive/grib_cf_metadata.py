@@ -1,4 +1,4 @@
-"""CF polish pass: attributes, cell methods and cell bounds."""
+"""CF metadata pass: attributes, cell methods and cell bounds."""
 
 from __future__ import annotations
 
@@ -9,7 +9,8 @@ import numpy as np
 
 from .grib_constants import (CF_CALENDAR, CF_CONVENTIONS, _HORIZONTAL_1D_BOUNDS_NAMES, _LATITUDE_LIKE_NAMES, _LEVEL_TYPE_NAMES, _NUMERIC_DTYPE_KINDS, _PRESSURE_UNITS, _VERTICAL_NAMES)
 from .grib_time import (_cf_unit_scale_seconds, _encode_cf_datetime, _encode_cf_timedelta, _is_cftime_datetime, _is_datetime_values, _is_timedelta_values)
-from .grib_utils import (FlatNetCDFSpec, _is_time_units, _unique_name)
+from .netcdf_dataset import NetCDFDataset
+from .grib_utils import (_is_time_units, _unique_name)
 
 
 def _sanitize_nc_attrs(attrs):
@@ -253,10 +254,10 @@ def _add_valid_time(coord_vars, aux_vars):
     :Parameters:
 
         coord_vars: `dict`
-            Polished 1-d dimension coordinates.
+            Processed 1-d dimension coordinates.
 
         aux_vars: `dict`
-            Polished auxiliary coordinates.
+            Processed auxiliary coordinates.
 
     :Returns:
 
@@ -327,10 +328,10 @@ def _build_cell_bounds(
             Current dataset dimensions.
 
         coord_vars: `dict`
-            Polished 1-d dimension coordinates.
+            Processed 1-d dimension coordinates.
 
         aux_vars: `dict`
-            Polished auxiliary coordinates.
+            Processed auxiliary coordinates.
 
         interval_hints: `tuple` of (`dict`, `dict`), optional
             ``(var_step_intervals, level_intervals)``: for each data
@@ -589,7 +590,7 @@ def _build_cell_bounds(
     return new_dims, bnds_vars, set(bnds_vars.keys())
 
 
-def _apply_cf_polish(
+def _apply_cf_metadata(
     dimensions,
     coord_vars,
     data_vars,
@@ -655,7 +656,7 @@ def _apply_cf_polish(
 
     :Returns:
 
-        `FlatNetCDFSpec`
+        `NetCDFDataset`
             Final CF normalised specification.
 
     """
@@ -711,17 +712,17 @@ def _apply_cf_polish(
         k: _encode_coord(k, dims, vals, attrs, is_dim_coord=True)
         for k, (dims, vals, attrs) in coord_vars.items()
     }
-    polished_coord_vars = {}
-    polished_aux_vars = {
+    cf_coord_vars = {}
+    cf_aux_vars = {
         k: _encode_coord(k, dims, vals, attrs, is_dim_coord=False)
         for k, (dims, vals, attrs) in aux_vars.items()
     }
     for k, (dims, arr, attrs) in encoded_coords.items():
         if arr.dtype.kind in _NUMERIC_DTYPE_KINDS:
-            polished_coord_vars[k] = (dims, arr, attrs)
+            cf_coord_vars[k] = (dims, arr, attrs)
         else:
             attrs.pop("axis", None)
-            polished_aux_vars[k] = (dims, arr, attrs)
+            cf_aux_vars[k] = (dims, arr, attrs)
 
     # Strip typeOfLevel / levtype from data_vars and backfill
     # level_type onto vertical coords
@@ -741,11 +742,11 @@ def _apply_cf_polish(
 
         if tol is not None:
             for cname in _VERTICAL_NAMES:
-                if cname in polished_coord_vars and cname in vdim_set:
-                    cattrs = polished_coord_vars[cname][2]
+                if cname in cf_coord_vars and cname in vdim_set:
+                    cattrs = cf_coord_vars[cname][2]
                     cattrs.setdefault("level_type", str(tol))
                     _apply_vertical_attrs(cname, cattrs)
-                elif cname in polished_aux_vars:
+                elif cname in cf_aux_vars:
                     if coord_orig_dims:
                         in_v_orig = coord_orig_dims.get(cname, set()).issubset(
                             v_orig
@@ -754,7 +755,7 @@ def _apply_cf_polish(
                         in_v_orig = True
 
                     if in_v_orig:
-                        polished_aux_vars[cname][2].setdefault(
+                        cf_aux_vars[cname][2].setdefault(
                             "level_type", str(tol)
                         )
 
@@ -764,7 +765,7 @@ def _apply_cf_polish(
     # (e.g. 1000 -> 300 hPa)
     if decreasing_atmos_pressure:
         dims_to_flip: set[str] = set()
-        for cname, (cdims, arr, cattrs) in list(polished_coord_vars.items()):
+        for cname, (cdims, arr, cattrs) in list(cf_coord_vars.items()):
             if (
                 cdims == (cname,)
                 and arr.ndim == 1
@@ -773,19 +774,19 @@ def _apply_cf_polish(
                 and _is_pressure_coord(cname, cattrs)
                 and np.all(np.diff(arr) > 0)
             ):
-                polished_coord_vars[cname] = (cdims, arr[::-1], cattrs)
+                cf_coord_vars[cname] = (cdims, arr[::-1], cattrs)
                 dims_to_flip.add(cname)
 
         if dims_to_flip:
             for aname, (adims, aarr, aattrs) in list(
-                polished_aux_vars.items()
+                cf_aux_vars.items()
             ):
                 flipped_arr = aarr
                 for ax, d in enumerate(adims):
                     if d in dims_to_flip:
                         flipped_arr = np.flip(flipped_arr, axis=ax)
 
-                polished_aux_vars[aname] = (adims, flipped_arr, aattrs)
+                cf_aux_vars[aname] = (adims, flipped_arr, aattrs)
 
             for vname, (vdims, vdata, vattrs) in list(
                 cleaned_data_vars.items()
@@ -804,29 +805,29 @@ def _apply_cf_polish(
     # coordinate (because there isn't one, as for surface fields)
     # becomes an attribute of the data variables.
     for lt_key in _LEVEL_TYPE_NAMES:
-        lt_var = polished_aux_vars.get(lt_key)
+        lt_var = cf_aux_vars.get(lt_key)
         if lt_var is None or lt_var[0] != ():
             continue
 
         lt_val = str(np.asarray(lt_var[1]).item())
-        del polished_aux_vars[lt_key]
+        del cf_aux_vars[lt_key]
         for vname, (vdims, data, attrs) in cleaned_data_vars.items():
             attrs.setdefault("level_type", lt_val)
 
-    _add_valid_time(polished_coord_vars, polished_aux_vars)
+    _add_valid_time(cf_coord_vars, cf_aux_vars)
 
     coordinate_scopes: dict[str, set] = {}
-    polished_dimensions, bnds_vars, bnds_names = _build_cell_bounds(
+    cf_dimensions, bnds_vars, bnds_names = _build_cell_bounds(
         dimensions,
-        polished_coord_vars,
-        polished_aux_vars,
+        cf_coord_vars,
+        cf_aux_vars,
         interval_hints,
         horizontal_bounds=horizontal_bounds,
         coordinate_scopes=coordinate_scopes,
     )
-    polished_aux_vars.update(bnds_vars)
+    cf_aux_vars.update(bnds_vars)
 
-    polished_vars = {}
+    cf_vars = {}
     for vname, (vdims, data, attrs) in cleaned_data_vars.items():
         vdim_set = set(vdims)
         if var_orig_dims:
@@ -836,7 +837,7 @@ def _apply_cf_polish(
 
         linked = [
             aname
-            for aname, (adims, _, _) in polished_aux_vars.items()
+            for aname, (adims, _, _) in cf_aux_vars.items()
             if aname not in bnds_names
             and vname in coordinate_scopes.get(aname, {vname})
             and set(adims).issubset(vdim_set)
@@ -862,11 +863,11 @@ def _apply_cf_polish(
         if cm:
             attrs.setdefault("cell_methods", cm)
 
-        polished_vars[vname] = (vdims, data, attrs)
+        cf_vars[vname] = (vdims, data, attrs)
 
     global_attrs = _sanitize_nc_attrs(global_attrs)
     if any(
-        vname in polished_coord_vars or vname in polished_aux_vars
+        vname in cf_coord_vars or vname in cf_aux_vars
         for vname in ("level", "levelist")
     ):
         global_attrs.pop("levelist", None)
@@ -875,9 +876,9 @@ def _apply_cf_polish(
     if any(
         "level_type" in attrs
         for _, _, attrs in (
-            *polished_coord_vars.values(),
-            *polished_aux_vars.values(),
-            *polished_vars.values(),
+            *cf_coord_vars.values(),
+            *cf_aux_vars.values(),
+            *cf_vars.values(),
         )
     ):
         global_attrs.pop("levtype", None)
@@ -885,10 +886,10 @@ def _apply_cf_polish(
 
     global_attrs["Conventions"] = CF_CONVENTIONS
 
-    return FlatNetCDFSpec(
-        dimensions=polished_dimensions,
-        coord_vars=polished_coord_vars,
-        data_vars=polished_vars,
-        aux_vars=polished_aux_vars,
+    return NetCDFDataset(
+        dimensions=cf_dimensions,
+        coord_vars=cf_coord_vars,
+        data_vars=cf_vars,
+        aux_vars=cf_aux_vars,
         global_attrs=global_attrs,
     )

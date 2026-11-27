@@ -4,11 +4,11 @@ import earthkit.data as ekd
 import numpy as np
 import pytest
 
-from xnetcdf.utils.grfive.grib_to_cf import (
+from xnetcdf.utils.grfive.grib_to_netcdf import (
     LazyTensorArray,
     _field_meta,
     _projected_grid_definition,
-    grib_to_flat_netcdf_spec,
+    grib_to_netcdf_dataset,
 )
 
 _SPATIAL_DIMS = {"latitude", "longitude", "x", "y", "values"}
@@ -71,7 +71,7 @@ def test_lazy_tensor_array_t_matches_individual_fields(
     ]
     assert len(t_fields) == 6
 
-    with grib_to_flat_netcdf_spec(
+    with grib_to_netcdf_dataset(
         ds, decreasing_atmos_pressure=decreasing_atmos_pressure
     ) as spec:
         t_dims, t_lazy, _ = spec.data_vars["t"]
@@ -140,7 +140,7 @@ def test_lazy_tensor_array_shared_file_lock_and_threads(data_dir):
 
     dataset = data_dir / "tuv_pl.grib"
     ds = ekd.from_source("file", str(dataset)).to_fieldlist()
-    with grib_to_flat_netcdf_spec(ds) as spec:
+    with grib_to_netcdf_dataset(ds) as spec:
         arrays = {
             k: v[1]
             for k, v in spec.data_vars.items()
@@ -150,7 +150,7 @@ def test_lazy_tensor_array_shared_file_lock_and_threads(data_dir):
         assert len({id(a.lock) for a in arrays.values()}) == 1
 
         # A second spec from the same source reuses the same lock
-        with grib_to_flat_netcdf_spec(ds) as spec2:
+        with grib_to_netcdf_dataset(ds) as spec2:
             other = next(
                 v[1]
                 for v in spec2.data_vars.values()
@@ -172,7 +172,7 @@ def test_lazy_tensor_array_shared_file_lock_and_threads(data_dir):
 def test_lazy_tensor_array_lock_pickles():
     import pickle
 
-    from xnetcdf.utils.grfive.grib_to_cf import _PicklableLock
+    from xnetcdf.utils.grfive.grib_to_netcdf import _PicklableLock
 
     lock = _PicklableLock()
     copy = pickle.loads(pickle.dumps(lock))
@@ -201,7 +201,7 @@ def test_lazy_tensor_array_as_dask_array(data_dir, scheduler):
     da = pytest.importorskip("dask.array")
 
     ds = ekd.from_source("file", str(data_dir / "example.grib"))
-    with grib_to_flat_netcdf_spec(ds.to_fieldlist()) as spec:
+    with grib_to_netcdf_dataset(ds.to_fieldlist()) as spec:
         for _, arr, _ in spec.data_vars.values():
             full = np.asarray(arr)
             # Natural chunks, chunks that split fields, and one chunk
@@ -219,7 +219,7 @@ def test_lazy_tensor_array_as_dask_array(data_dir, scheduler):
 def _first_lazy(data_dir):
     dataset = data_dir / "tuv_pl.grib"
     ds = ekd.from_source("file", str(dataset)).to_fieldlist()
-    spec = grib_to_flat_netcdf_spec(ds)
+    spec = grib_to_netcdf_dataset(ds)
     arr = next(
         v[1] for v in spec.data_vars.values() if isinstance(v[1], LazyTensorArray)
     )
@@ -273,7 +273,7 @@ def test_lazy_tensor_array_indexing_edge_cases(data_dir):
 def test_lazy_tensor_array_indexing_flipped_axis(data_dir):
     dataset = data_dir / "tuv_pl.grib"
     ds = ekd.from_source("file", str(dataset)).to_fieldlist()
-    with grib_to_flat_netcdf_spec(ds, decreasing_atmos_pressure=True) as s2:
+    with grib_to_netcdf_dataset(ds, decreasing_atmos_pressure=True) as s2:
         for name, (dims, a2, _) in s2.data_vars.items():
             if not isinstance(a2, LazyTensorArray) or not a2.flip_axes:
                 continue
@@ -301,7 +301,7 @@ def test_lazy_tensor_array_chunks_are_message_aligned(data_dir):
     dataset = data_dir / "tuv_pl.grib"
     ds = ekd.from_source("file", str(dataset)).to_fieldlist()
     for dap in (True, False):
-        with grib_to_flat_netcdf_spec(
+        with grib_to_netcdf_dataset(
             ds, decreasing_atmos_pressure=dap
         ) as spec:
             for dims, a, _ in spec.data_vars.values():
@@ -314,7 +314,7 @@ def test_lazy_tensor_array_chunks_are_message_aligned(data_dir):
                 assert a.chunks[-2:] == tuple(a.tensor.field_shape)
 
     # View of a larger array with a squeezed axis keeps alignment
-    with grib_to_flat_netcdf_spec(ds) as spec:
+    with grib_to_netcdf_dataset(ds) as spec:
         a = next(
             v[1]
             for v in spec.data_vars.values()
@@ -332,7 +332,7 @@ def test_reduced_gaussian_grid_1d_horizontal(data_dir, squeeze):
     expected = ds[0].to_numpy().reshape(-1)
     npts = expected.size
 
-    with grib_to_flat_netcdf_spec(ds, squeeze=squeeze) as spec:
+    with grib_to_netcdf_dataset(ds, squeeze=squeeze) as spec:
         dims, lazy, _ = spec.data_vars["lsm"]
         assert isinstance(lazy, LazyTensorArray)
         assert dims[-1] == "values"
@@ -358,7 +358,7 @@ def test_ensemble_example_matches_fields(data_dir):
     """Every message of the ensemble example appears once in the data."""
     dataset = data_dir / "example.grib"
     ds = ekd.from_source("file", str(dataset)).to_fieldlist()
-    with grib_to_flat_netcdf_spec(ds) as spec:
+    with grib_to_netcdf_dataset(ds) as spec:
         total = 0
         for name, (dims, lazy, _) in spec.data_vars.items():
             assert isinstance(lazy, LazyTensorArray)
@@ -376,7 +376,7 @@ def test_rotated_ll_grid_mapping(data_dir):
 
     dataset = data_dir / "rotated_wind_20x20.grib"
     ds = ekd.from_source("file", str(dataset)).to_fieldlist()
-    with grib_to_flat_netcdf_spec(ds) as spec:
+    with grib_to_netcdf_dataset(ds) as spec:
         assert spec.dimensions == {
             "grid_latitude": 9,
             "grid_longitude": 18,
@@ -449,7 +449,7 @@ def test_projected_grids_read(data_dir, name):
     """Projected grids give lazy (y, x) data with a grid mapping."""
     dataset = data_dir / name
     ds = ekd.from_source("file", str(dataset)).to_fieldlist()
-    with grib_to_flat_netcdf_spec(ds) as spec:
+    with grib_to_netcdf_dataset(ds) as spec:
         assert spec.dimensions["y"] == 10
         assert spec.dimensions["x"] == 12
         (dims, lazy, attrs), = spec.data_vars.values()
@@ -466,7 +466,7 @@ def test_surface_level_type_is_a_variable_attribute(data_dir):
     """Without a vertical coordinate, level_type goes on the variables."""
     dataset = data_dir / "rotated_wind_20x20.grib"
     ds = ekd.from_source("file", str(dataset)).to_fieldlist()
-    with grib_to_flat_netcdf_spec(ds) as spec:
+    with grib_to_netcdf_dataset(ds) as spec:
         assert "level_type" not in spec.aux_vars
         assert "levtype" not in spec.global_attrs
         assert "level_type" not in spec.global_attrs
@@ -476,14 +476,14 @@ def test_surface_level_type_is_a_variable_attribute(data_dir):
     # With a vertical coordinate it stays on that coordinate
     dataset = data_dir / "tuv_pl.grib"
     ds = ekd.from_source("file", str(dataset)).to_fieldlist()
-    with grib_to_flat_netcdf_spec(ds) as spec:
+    with grib_to_netcdf_dataset(ds) as spec:
         assert "level_type" in spec.coord_vars["level"][2]
         for _, _, attrs in spec.data_vars.values():
             assert "level_type" not in attrs
 
 
 def test_compute_1d_spatial_bounds():
-    from xnetcdf.utils.grfive.grib_to_cf import _compute_1d_spatial_bounds as f
+    from xnetcdf.utils.grfive.grib_to_netcdf import _compute_1d_spatial_bounds as f
 
     np.testing.assert_allclose(
         f("longitude", np.array([0.0, 10.0, 20.0])),
@@ -509,7 +509,7 @@ def test_compute_1d_spatial_bounds():
 
 
 def test_horizontal_bounds_only_where_midpoints_are_valid(data_dir):
-    from xnetcdf.utils.grfive.grib_to_cf import (
+    from xnetcdf.utils.grfive.grib_to_netcdf import (
         _build_cell_bounds,
         _compute_1d_spatial_bounds as f,
     )
@@ -536,13 +536,13 @@ def test_horizontal_bounds_only_where_midpoints_are_valid(data_dir):
     # Regular lat/lon grids get bounds; reduced grids have no 1-d axes
     for name, expected in (("tuv_pl.grib", True), ("lsm.N128.grib", False)):
         ds = ekd.from_source("file", str(data_dir / name)).to_fieldlist()
-        with grib_to_flat_netcdf_spec(ds) as spec:
+        with grib_to_netcdf_dataset(ds) as spec:
             assert ("latitude_bnds" in spec.aux_vars) is expected
 
 
 def test_healpix_grid_mapping(data_dir):
     """HEALPix gets a CF grid mapping and no computed lat/lon."""
-    spec = grib_to_flat_netcdf_spec(str(data_dir / "healpix_H8.grib2"))
+    spec = grib_to_netcdf_dataset(str(data_dir / "healpix_H8.grib2"))
     assert "latitude" not in spec.aux_vars
     assert "longitude" not in spec.aux_vars
     attrs = spec.aux_vars["healpix"][2]
@@ -564,7 +564,7 @@ def test_healpix_grid_mapping(data_dir):
 
 def test_reduced_rotated_gg_grid_mapping(data_dir):
     """Reduced rotated Gaussian: mapping only, no coords or bounds."""
-    spec = grib_to_flat_netcdf_spec(
+    spec = grib_to_netcdf_dataset(
         str(data_dir / "rotated_N32_subarea.grib")
     )
     attrs = spec.aux_vars["rotated_latitude_longitude"][2]
@@ -595,7 +595,7 @@ def test_projected_grid_mapping(data_dir, name, gm_name):
 
     dataset = data_dir / name
     field = ekd.from_source("file", str(dataset)).to_fieldlist()[0]
-    spec = grib_to_flat_netcdf_spec(str(dataset))
+    spec = grib_to_netcdf_dataset(str(dataset))
 
     assert "latitude" not in spec.aux_vars
     assert "longitude" not in spec.aux_vars
@@ -643,7 +643,7 @@ def test_rotated_grid_with_rotation_angle_is_unchanged(
         eccodes.codes_write(h, o)
         eccodes.codes_release(h)
 
-    spec = grib_to_flat_netcdf_spec(str(out))
+    spec = grib_to_netcdf_dataset(str(out))
     assert "rotated_latitude_longitude" not in spec.aux_vars
     assert "grid_latitude" not in spec.coord_vars
     assert "latitude" in {**spec.aux_vars, **spec.coord_vars}
@@ -653,7 +653,7 @@ def test_rotated_grid_with_rotation_angle_is_unchanged(
 
 def test_grib_cell_methods_use_existing_time_axis():
     """cell_methods never names the forecast reference time."""
-    from xnetcdf.utils.grfive.grib_polish import _format_cell_methods
+    from xnetcdf.utils.grfive.grib_cf_metadata import _format_cell_methods
 
     hints = ("sum", None)
     assert _format_cell_methods(("forecast_reference_time",), hints) is None
@@ -663,7 +663,7 @@ def test_grib_cell_methods_use_existing_time_axis():
 
 def test_grib_missing_points_use_fill_value(data_dir):
     """NaN points are returned as the declared _FillValue."""
-    spec = grib_to_flat_netcdf_spec(
+    spec = grib_to_netcdf_dataset(
         str(data_dir / "polar_stereographic_12x10.grib1")
     )
     _, data, attrs = spec.data_vars["tp"]
@@ -707,7 +707,7 @@ def test_grib_step_bounds_with_zero_length_step(data_dir, tmp_path):
             for e in (0, 6, 12)
         ],
     )
-    with grib_to_flat_netcdf_spec(str(path)) as spec:
+    with grib_to_netcdf_dataset(str(path)) as spec:
         assert spec.coord_vars["step"][2]["bounds"] == "step_bnds"
         np.testing.assert_array_equal(
             spec.aux_vars["step_bnds"][1], [[0, 0], [0, 6], [0, 12]]
@@ -722,7 +722,7 @@ def test_grib_hybrid_level_has_no_hybrid_standard_name(data_dir, tmp_path):
         "hybrid.grib",
         [[("typeOfLevel", "hybrid"), ("level", n)] for n in (1, 50, 137)],
     )
-    with grib_to_flat_netcdf_spec(str(path)) as spec:
+    with grib_to_netcdf_dataset(str(path)) as spec:
         attrs = spec.coord_vars["level"][2]
         assert "standard_name" not in attrs
         assert attrs["positive"] == "down"
@@ -744,15 +744,15 @@ def test_grib_dropped_fields_raise(data_dir, tmp_path):
         ],
     )
     with pytest.raises(ValueError, match="silently dropped"):
-        grib_to_flat_netcdf_spec(str(path))
+        grib_to_netcdf_dataset(str(path))
 
-    with grib_to_flat_netcdf_spec(str(path), profile="grib") as spec:
+    with grib_to_netcdf_dataset(str(path), profile="grib") as spec:
         assert spec.data_vars["t"][0] == ("depth", "y", "x")
 
 
 def test_grib_single_height_gets_scalar_coordinate(data_dir):
     """2 metre fields get a scalar height coordinate."""
-    with grib_to_flat_netcdf_spec(
+    with grib_to_netcdf_dataset(
         str(data_dir / "lambert_12x10.grib1")
     ) as spec:
         _, _, attrs = spec.data_vars["2t"]
@@ -779,7 +779,7 @@ def test_grib1_soil_depth_units_are_cm(data_dir, tmp_path):
             for top, bottom in ((0, 7), (7, 28))
         ],
     )
-    with grib_to_flat_netcdf_spec(str(path), profile="grib") as spec:
+    with grib_to_netcdf_dataset(str(path), profile="grib") as spec:
         assert spec.coord_vars["depth"][2]["units"] == "cm"
         bounds = spec.aux_vars[spec.coord_vars["depth"][2]["bounds"]][1]
         np.testing.assert_array_equal(bounds, [[0, 7], [7, 28]])
@@ -799,7 +799,7 @@ def test_grib_single_altitude_gets_scalar_coordinate(data_dir, tmp_path):
             ]
         ],
     )
-    with grib_to_flat_netcdf_spec(str(path)) as spec:
+    with grib_to_netcdf_dataset(str(path)) as spec:
         dims, value, attrs = spec.aux_vars["altitude"]
         assert (dims, value) == ((), 500)
         assert attrs["standard_name"] == "altitude"
@@ -820,7 +820,7 @@ def test_grib_coordinates_named_after_standard_names(data_dir, tmp_path):
             ]
         ],
     )
-    with grib_to_flat_netcdf_spec(str(path)) as spec:
+    with grib_to_netcdf_dataset(str(path)) as spec:
         assert "level" not in spec.aux_vars
         assert spec.aux_vars["height"][2]["axis"] == "Z"
         assert "height" in spec.data_vars["z"][2]["coordinates"].split()
@@ -837,7 +837,7 @@ def test_grib_valid_time_coordinate(data_dir, tmp_path):
             for e in (6, 12)
         ],
     )
-    with grib_to_flat_netcdf_spec(str(path)) as spec:
+    with grib_to_netcdf_dataset(str(path)) as spec:
         dims, arr, attrs = spec.aux_vars["time"]
         frt = spec.aux_vars["forecast_reference_time"][1]
         assert dims == ("step",)
@@ -863,7 +863,7 @@ def test_grib_variables_with_different_step_intervals(data_dir, tmp_path):
             for e in (6, 12)
         ],
     )
-    with grib_to_flat_netcdf_spec(str(path)) as spec:
+    with grib_to_netcdf_dataset(str(path)) as spec:
         coords = {n: spec.data_vars[n][2]["coordinates"].split() for n in spec.data_vars}
         every = {**spec.coord_vars, **spec.aux_vars}
         assert "bounds" not in every["step"][2]
@@ -900,7 +900,7 @@ def test_grib_conflicting_step_intervals_give_no_bounds(data_dir, tmp_path):
         ],
     )
     with pytest.warns(UserWarning, match="different start steps"):
-        spec = grib_to_flat_netcdf_spec(str(path))
+        spec = grib_to_netcdf_dataset(str(path))
 
     assert "bounds" not in spec.aux_vars["step"][2]
     assert "time_bnds" not in spec.aux_vars
@@ -941,7 +941,7 @@ def test_grib_single_soil_layer_gets_scalar_depth_with_bounds(
         [_layer("First", 7, 2) + _layer("Second", 28, 2)],
     )
     for path, units, expected in ((grib1, "cm", [7, 28]), (grib2, "m", [0.07, 0.28])):
-        with grib_to_flat_netcdf_spec(str(path), profile=profile) as spec:
+        with grib_to_netcdf_dataset(str(path), profile=profile) as spec:
             dims, value, attrs = spec.aux_vars["depth"]
             assert dims == ()
             assert attrs["units"] == units
@@ -959,7 +959,7 @@ def test_grib1_soil_layers_real_file(data_dir):
     ``soil_layers.grib1`` (from cfgrib's test data) has ERA5-style
     ``stl1``-``stl4`` and ``swvl1``-``swvl4`` variables, one per layer.
     """
-    with grib_to_flat_netcdf_spec(str(data_dir / "soil_layers.grib1")) as spec:
+    with grib_to_netcdf_dataset(str(data_dir / "soil_layers.grib1")) as spec:
         coords = {
             n: v[2].get("coordinates", "").split()
             for n, v in spec.data_vars.items()
@@ -995,7 +995,7 @@ def test_grib2_gfs_soil_layers_real_file(data_dir, profile):
     import earthkit.data as ekd
 
     path = str(data_dir / "gfs_soil_layers.grib2")
-    with grib_to_flat_netcdf_spec(path, profile=profile) as spec:
+    with grib_to_netcdf_dataset(path, profile=profile) as spec:
         dims, data, _ = spec.data_vars["st"]
         assert dims == ("depth", "latitude", "longitude")
         _, depth, attrs = spec.coord_vars["depth"]
@@ -1020,13 +1020,13 @@ def test_grib_mixed_level_types_error_is_explained(data_dir):
     """The ``grib`` profile can't mix surface and soil-layer variables."""
     path = str(data_dir / "soil_layers.grib1")
     with pytest.raises(ValueError, match="mixes level types"):
-        grib_to_flat_netcdf_spec(path, profile="grib")
+        grib_to_netcdf_dataset(path, profile="grib")
 
 
 def test_grib_profile_has_no_scalar_level_for_named_surface(data_dir):
     """The earth's surface is not a CF vertical coordinate."""
     path = str(data_dir / "lsm.N128.grib")
-    with grib_to_flat_netcdf_spec(path, profile="grib") as spec:
+    with grib_to_netcdf_dataset(path, profile="grib") as spec:
         assert "level" not in spec.aux_vars
         assert "level" not in spec.coord_vars
         for _, _, attrs in spec.data_vars.values():

@@ -3,7 +3,7 @@ from pathlib import Path
 
 import numpy as np
 
-from .grib_to_cf import grib_to_flat_netcdf_spec
+from .grib_to_netcdf import grib_to_netcdf_dataset
 from .variable import DataVariable, DimensionScale, Variable
 
 
@@ -12,7 +12,7 @@ class File(Mapping):
 
     The fields of the file are combined, where possible, into
     variables with N-d data, and described with CF metadata. See
-    `grib_to_flat_netcdf_spec` for the details of how.
+    `grib_to_netcdf_dataset` for the details of how.
 
     :CF mappings:
 
@@ -140,7 +140,7 @@ class File(Mapping):
         }
         self.options = options
 
-        d = grib_to_flat_netcdf_spec(filename, **options)
+        d = grib_to_netcdf_dataset(filename, **options)
 
         if verbose > 0 or verbose == -1:
             import pprint
