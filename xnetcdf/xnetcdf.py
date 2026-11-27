@@ -2005,21 +2005,40 @@ class Dataset(Group):
             argument can not be provided.
 
         earthkit_options: `dict` or `None`, optional
+            Options that are used when opening a dataset with the
+            ``'earthkit'`` backend. Setting to `None` (the default) is
+            equivalent to providing an empty dictionary. The options
+            are in separate sections, so that the keywords of the
+            different libraries can not clash. Any unknown key raises
+            an exception. The provided dictionaries are not modified.
 
-            when opening a dataset with the ``'earthkit'`` backend,
-            keyword arguments that are passed to
-            `earthkit.data.from_source`,
-            `earthkit.data.xr_engine.profile.Profile`, or used to
-            control the GRIB to CF mapping metadata. Setting to
-            `None` (the default) is equivalent to providing an empty
-            dictionary.
+            * ``'from_source'``: Keyword arguments that are passed to
+              `earthkit.data.from_source`. The special key ``'name'``
+              is the source type (such as ``'file'`` or
+              ``'stream'``) that bypasses automatic detection.
 
-            ``{'from_source': {'name': 'stream'},
-               'profile': {'name': 'mars',
-                           'squeeze': False},
-               'mapping': {'calendar': '365_day',
-                           'decreasing_atmos_pressure': False}}``
-                            
+            * ``'profile'``: Keyword arguments that are passed to the
+              `earthkit.data.xr_engine` profile, such as
+              ``lazy_load`` or ``extra_dims``. The special key
+              ``'name'`` is the profile (``'auto'``, ``'mars'``,
+              ``'grib'``, etc.), and defaults to ``'auto'``. A profile
+              name may be given instead of a dictionary. The key
+              ``'squeeze'`` can't be set here, but in ``'mapping'``.
+
+            * ``'mapping'``: Options for the mapping of the GRIB
+              metadata to CF. ``'calendar'`` (default
+              ``'proleptic_gregorian'``) is the CF calendar of the
+              time coordinates. ``'decreasing_atmos_pressure'``
+              (default `True`) reverses strictly increasing 1-d air
+              pressure coordinates to decreasing. ``'squeeze'``
+              (default `True`) drops size 1, non-horizontal
+              dimensions from the data variables.
+
+            For example: ``{'from_source': {'name': 'stream'},
+            'profile': {'name': 'mars', 'extra_dims': ['step']},
+            'mapping': {'calendar': '365_day',
+            'decreasing_atmos_pressure': False}}``
+
         netCDF4_options: `dict` or `None`, optional
             Keyword arguments that are passed to `netCDF4.Dataset`
             when opening a dataset with the ``'netCDF4'``

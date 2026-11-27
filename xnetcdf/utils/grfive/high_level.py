@@ -70,7 +70,7 @@ class File(Mapping):
              as ``'file'`` or ``'stream'``) to bypass automatic input
              type detection.
 
-         squeezed: `bool`, optional
+         squeeze: `bool`, optional
              If True (the default) then drop size 1, non-horizontal
              dimensions (such as time, step, level, number, etc.) from
              the data variables data array. If False then keep them in
@@ -83,20 +83,20 @@ class File(Mapping):
              and higher (or the value ``-1``) produce the same
              maximally verbose output.
 
-         earthkit_options: `str`
+         source_kwargs: `dict`, optional
              Keyword arguments that are passed to
              `earthkit.data.from_source`. Setting to `None` (the
              default) is equivalent to providing an empty dictionary.
 
-             THe special key ``'BackendDataBuilder_options'`` with a
-             dictionary value is for options additional keyword
-             arguments forwarded to
-             `earthkit.data.xr_engine.builder.BackendDataBuilder` (via
-             `SingleDatasetBuilder`), such as ``lazy_load=False``,
-             ``allow_holes=True``, ``rename_dims=...``, or
-             ``add_earthkit_attrs=True`` (which defaults to False
-             here). Do not pass ``'squeeze'`` here; use the dedicated
-             *squeeze* parameter instead.
+         profile_kwargs: `dict`, optional
+             Keyword arguments that are passed to the `earthkit.data`
+             ``xr_engine`` `Profile`, such as ``lazy_load=False``,
+             ``allow_holes=True``, ``rename_dims=...``,
+             ``extra_dims=...`` or ``add_earthkit_attrs=True`` (which
+             defaults to False here). Do not pass ``'squeeze'``
+             here; use the dedicated *squeeze* parameter
+             instead. Setting to `None` (the default) is equivalent
+             to providing an empty dictionary.
 
     """
 
@@ -109,8 +109,9 @@ class File(Mapping):
         calendar="proleptic_gregorian",
         decreasing_atmos_pressure=True,
         squeeze=True,
-            verbose=0,
-        **earthkit_options,
+        verbose=0,
+        source_kwargs=None,
+        profile_kwargs=None,
     ):
         if mode != "r":
             raise ValueError(
@@ -125,19 +126,14 @@ class File(Mapping):
             except AttributeError:
                 self.filename = "<file-like>"
 
-                
-        mapping_options = earthkit_options.pop('mapping_options', {})
-        profile_options = earthkit_options.pop('profile_options', {})
-        source_options = earthkit_options
-        
         options = {
             "profile": profile,
             "source_type": source_type,
             "calendar": calendar,
             "decreasing_atmos_pressure": decreasing_atmos_pressure,
             "squeeze": squeeze,
-            "source_kwargs": earthkit_options,
-            "profile_kwargs": profile_options,
+            "source_kwargs": source_kwargs,
+            "profile_kwargs": profile_kwargs,
         }
         self.options = options
 

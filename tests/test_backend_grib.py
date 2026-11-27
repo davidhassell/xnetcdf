@@ -994,3 +994,57 @@ def test_grib_profile_has_no_scalar_level_for_named_surface(data_dir):
         assert "level" not in spec.coord_vars
         for _, _, attrs in spec.data_vars.values():
             assert "level" not in attrs["coordinates"].split()
+
+
+def test_earthkit_options_sections(data_dir):
+    """The sectioned ``earthkit_options`` are parsed strictly."""
+    from xnetcdf.utils.utils_earthkit import parse_earthkit_options
+
+    options = {
+        "from_source": {"name": "file", "x": 1},
+        "profile": {"name": "grib", "extra_dims": ["step"]},
+        "mapping": {"calendar": "365_day", "squeeze": False},
+    }
+    assert parse_earthkit_options(options) == {
+        "source_type": "file",
+        "source_kwargs": {"x": 1},
+        "profile": "grib",
+        "profile_kwargs": {"extra_dims": ["step"]},
+        "calendar": "365_day",
+        "squeeze": False,
+    }
+    # The input is not modified
+    assert options["from_source"] == {"name": "file", "x": 1}
+    assert options["profile"]["name"] == "grib"
+
+    assert parse_earthkit_options({"profile": "mars"})["profile"] == "mars"
+
+    for bad in (
+        {"calendar": "365_day"},
+        {"mapping": {"calender": "365_day"}},
+        {"profile": {"squeeze": False}},
+        {"mode": "w"},
+        {"mapping": "365_day"},
+    ):
+        with pytest.raises((ValueError, TypeError)):
+            parse_earthkit_options(bad)
+
+    import xnetcdf
+
+    path = str(data_dir / "tuv_pl.grib")
+    ds = xnetcdf.Dataset(
+        path,
+        backend="earthkit",
+        earthkit_options={
+            "profile": {"name": "grib"},
+            "mapping": {"decreasing_atmos_pressure": False},
+        },
+    )
+    assert "t" in ds.variables
+
+
+def test_earthkit_options_fieldlist_with_mode(data_dir):
+    from xnetcdf.utils.utils_earthkit import earthkit_read
+
+    fl = ekd.from_source("file", str(data_dir / "tuv_pl.grib")).to_fieldlist()
+    assert earthkit_read(fl, {"mode": "r"})["nc"] is not None
