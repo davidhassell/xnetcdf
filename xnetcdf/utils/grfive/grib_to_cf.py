@@ -60,6 +60,10 @@ _LOCK_REGISTRY = weakref.WeakValueDictionary()
 _LOCK_REGISTRY_GUARD = threading.Lock()
 
 
+class _DroppedFieldsError(ValueError):
+    """The dimensions of a variable do not account for all its fields."""
+
+
 class _PicklableLock:
     """A re-entrant lock that survives pickling.
 
@@ -1074,13 +1078,15 @@ def _get_dataset_builder_cls():
             tensor.source = tensor.source.unwrap()
             n_expected = math.prod(tensor.user_shape)
             if len(tensor.source) != n_expected:
-                raise ValueError(
+                raise _DroppedFieldsError(
                     f"Variable {name!r} has {len(tensor.source)} GRIB "
                     f"fields but its dimensions only account for "
                     f"{n_expected}, so fields would be silently dropped. "
                     "The profile in use does not expose all the "
                     "distinguishing keys (e.g. the level for layer or "
-                    "non-MARS level types). Try profile='grib'."
+                    "non-MARS level types). Try profile='grib', or add "
+                    "the distinguishing keys to "
+                    "profile_kwargs['extra_dims']."
                 )
 
             fill_value = _default_fill_value(self.dtype)
@@ -1520,14 +1526,203 @@ def _get_dataset_builder_cls():
     return FlatNetCDFDatasetBuilder
 
 
+_LAND_LAYER_KEY = "scaledValueOfFirstFixedSurface"
+
+
+def _is_grib2_land_layer(field):
+    """Whether a field is on a GRIB2 layer below the land surface."""
+    try:
+        return (
+            _field_meta(field, "edition") == 2
+            and field.vertical.level_type() == "depth_below_land_layer"
+        )
+    except Exception:
+        return False
+
+
+def _has_grib2_land_layers(ds):
+    """Whether any field is on a GRIB2 layer below the land surface."""
+    return any(_is_grib2_land_layer(f) for f in ds)
+
+
+def _layer_dimension_to_depth(spec):
+    """Turn a dimension of GRIB2 land layers into a depth coordinate.
+
+    The dimension was made by `earthkit` from the scaled value of the
+    first fixed surface (see `grib_to_flat_netcdf_spec`). Its
+    coordinate is replaced by a depth coordinate, in metres, with the
+    layer bounds. It is then named by
+    `_name_coordinates_after_standard_names`.
+
+    :Parameters:
+
+        spec: `FlatNetCDFSpec`
+            The CF normalised specification, modified in place.
+
+    :Returns:
+
+        `FlatNetCDFSpec`
+            The modified *spec*.
+
+    """
+    dim = _LAND_LAYER_KEY
+    if dim not in spec.dimensions:
+        return spec
+
+    layers = {}
+    for _, data, _ in (
+        v for v in spec.data_vars.values() if dim in v[0]
+    ):
+        for field in data.tensor.source:
+            bounds = _layer_bounds(field)
+            top = int(_field_meta(field, dim))
+            if bounds is None or layers.setdefault(top, bounds) != bounds:
+                raise ValueError(
+                    "Can't make a depth coordinate from the land layers "
+                    "of the GRIB fields"
+                )
+
+    container = spec.coord_vars if dim in spec.coord_vars else spec.aux_vars
+    values = [int(v) for v in np.ravel(container[dim][1])]
+    bounds = np.array([layers[v] for v in values], dtype=np.float64)
+    if np.any(np.diff(bounds[:, 0]) <= 0):
+        raise ValueError(
+            "The GRIB land layers are not in increasing depth order"
+        )
+
+    spec.dimensions.setdefault("bnds", 2)
+    bname = _unique_name(
+        f"{dim}_bnds",
+        set(spec.dimensions) | set(spec.coord_vars) | set(spec.aux_vars),
+    )
+    container[dim] = (
+        (dim,),
+        bounds.mean(axis=1),
+        {
+            "standard_name": "depth",
+            "long_name": "soil depth",
+            "units": "m",
+            "positive": "down",
+            "bounds": bname,
+        },
+    )
+    spec.aux_vars[bname] = ((dim, "bnds"), bounds, {})
+    return spec
+
+
+def _layer_bounds(field):
+    """Return the bounds of the vertical layer of a GRIB field.
+
+    :Parameters:
+
+        field: `earthkit.data` field
+
+    :Returns:
+
+        `tuple` or `None`
+            The ascending ``(lower, upper)`` bounds in the units
+            `earthkit` uses (but see below), or `None` if the field
+            is not on a layer.
+
+            In GRIB2 the depth of a layer below the land surface is
+            calculated from the scaled values of its two fixed
+            surfaces, in metres, because the integer ``topLevel`` and
+            ``bottomLevel`` keys round sub-metre depths to 0.
+
+    """
+    vertical = field.vertical
+    layer = vertical.layer()
+    if layer is None:
+        return None
+
+    if (
+        vertical.level_type() == "depth_below_land_layer"
+        and _field_meta(field, "edition") == 2
+    ):
+        depths = []
+        for surface in ("First", "Second"):
+            value = _field_meta(field, f"scaledValueOf{surface}FixedSurface")
+            scale = _field_meta(field, f"scaleFactorOf{surface}FixedSurface")
+            if value is None or scale is None:
+                break
+
+            depths.append(float(value) * 10.0 ** -float(scale))
+        else:
+            layer = depths
+
+    return tuple(sorted(float(x) for x in layer))
+
+
+def _drop_rounded_scalar_depth(spec, vdims, attrs, tensor):
+    """Remove `earthkit`'s scalar depth of a GRIB2 land layer.
+
+    The depth is wrong for sub-metre layers, because `earthkit` uses
+    the rounded integer ``level`` (see `_layer_bounds`). The correct
+    coordinate is then made by `_apply_vertical_fixes`.
+
+    :Parameters:
+
+        spec: `FlatNetCDFSpec`
+            Modified in place.
+
+        vdims: `tuple` of `str`
+            The dimensions of the data variable.
+
+        attrs: `dict`
+            The attributes of the data variable, modified in place.
+
+        tensor:
+            The `earthkit` tensor of the data variable.
+
+    :Returns:
+
+        `None`
+
+    """
+    try:
+        field = tensor.source[0]
+        if (
+            _field_meta(field, "edition") != 2
+            or field.vertical.level_type() != "depth_below_land_layer"
+        ):
+            return
+    except Exception:
+        return
+
+    coordinates = attrs.get("coordinates", "").split()
+    for cname in list(coordinates):
+        entry = spec.aux_vars.get(cname)
+        if (
+            entry is None
+            or entry[0] != ()
+            or entry[2].get("standard_name") != "depth"
+        ):
+            continue
+
+        coordinates.remove(cname)
+        # Other variables may share the coordinate
+        if not any(
+            cname in a.get("coordinates", "").split()
+            for n, (_, _, a) in spec.data_vars.items()
+            if a is not attrs
+        ):
+            del spec.aux_vars[cname]
+            spec.aux_vars.pop(entry[2].get("bounds"), None)
+
+    if coordinates:
+        attrs["coordinates"] = " ".join(coordinates)
+    else:
+        attrs.pop("coordinates", None)
+
+
 def _apply_vertical_fixes(spec, ds):
     """Fix up vertical coordinates that `earthkit` leaves wrong or out.
 
     * A variable with no vertical coordinate whose fields are all at
-      one single (non-layer) level of a type with a value, such as
-      2 metre temperature, gets a scalar vertical coordinate, since
-      it can't have more than one level. The attributes come from
-      `earthkit`.
+      one single level or layer of a type with a value, such as 2
+      metre temperature or a soil layer, gets a scalar vertical
+      coordinate (with bounds for a layer), since it can't have more
+      than one level. The attributes come from `earthkit`.
 
     * GRIB1 soil depths are in centimetres, but `earthkit` labels
       them as metres.
@@ -1549,11 +1744,14 @@ def _apply_vertical_fixes(spec, ds):
     used = set(spec.dimensions) | set(spec.coord_vars) | set(spec.aux_vars)
     used |= set(spec.data_vars)
     all_coords = {**spec.coord_vars, **spec.aux_vars}
+    made = {}
     for vname, (vdims, data, attrs) in spec.data_vars.items():
         tensor = getattr(data, "tensor", None)
         if tensor is None:
             continue
 
+        linked = set(vdims) | set(attrs.get("coordinates", "").split())
+        _drop_rounded_scalar_depth(spec, vdims, attrs, tensor)
         linked = set(vdims) | set(attrs.get("coordinates", "").split())
         if linked & _VERTICAL_NAMES or any(
             coord_attrs.get("axis") == "Z"
@@ -1563,11 +1761,14 @@ def _apply_vertical_fixes(spec, ds):
             continue
 
         try:
-            vertical = [tensor.source[0].vertical, tensor.source[-1].vertical]
+            first, last = tensor.source[0], tensor.source[-1]
+            vertical = [first.vertical, last.vertical]
             cf = vertical[0].cf()
+            layers = [_layer_bounds(f) for f in (first, last)]
+            is_layer = layers[0] is not None
             levels = {v.level() for v in vertical}
-            is_single = all(
-                v.layer() is None and not v.parametric() for v in vertical
+            is_single = layers[0] == layers[1] and not any(
+                v.parametric() for v in vertical
             )
             same_type = len({v.level_type() for v in vertical}) == 1
         except Exception:
@@ -1578,8 +1779,7 @@ def _apply_vertical_fixes(spec, ds):
             not std_name
             or not is_single
             or not same_type
-            or len(levels) != 1
-            or None in levels
+            or (not is_layer and (len(levels) != 1 or None in levels))
             or "units" not in cf
             or cf["units"] == "1"
         ):
@@ -1588,16 +1788,53 @@ def _apply_vertical_fixes(spec, ds):
         if std_name == "height_above_mean_sea_level":
             std_name = "altitude"
 
-        cname = _unique_name(
-            "height" if std_name == "height" else std_name, used
-        )
         coord_attrs = dict(cf)
         coord_attrs["standard_name"] = std_name
         coord_attrs["axis"] = "Z"
-        spec.aux_vars[cname] = ((), np.array(levels.pop()), coord_attrs)
+        # The value of a layer is its midpoint
+        value = sum(layers[0]) / 2 if is_layer else levels.pop()
+
+        # Variables on the same level or layer share a coordinate
+        key = (tuple(sorted(coord_attrs.items())), float(value), layers[0])
+        cname = made.get(key)
+        if cname is None:
+            cname = _unique_name(
+                "height" if std_name == "height" else std_name, used
+            )
+            made[key] = cname
+            if is_layer:
+                bname = _unique_name(f"{cname}_bnds", used)
+                coord_attrs["bounds"] = bname
+                spec.dimensions.setdefault("bnds", 2)
+                spec.aux_vars[bname] = (
+                    ("bnds",),
+                    np.array(layers[0], dtype=np.float64),
+                    {},
+                )
+
+            spec.aux_vars[cname] = ((), np.array(value), coord_attrs)
+
         attrs["coordinates"] = " ".join(
             [*attrs.get("coordinates", "").split(), cname]
         )
+
+    # earthkit gives depth layers the value of their top, but we use
+    # the midpoint
+    for container in (spec.coord_vars, spec.aux_vars):
+        for cname, (cdims, cvalues, cattrs) in list(container.items()):
+            bentry = {**spec.coord_vars, **spec.aux_vars}.get(
+                cattrs.get("bounds")
+            )
+            if cattrs.get("standard_name") != "depth" or bentry is None:
+                continue
+
+            bvalues = np.asarray(bentry[1], dtype=np.float64)
+            if bvalues.shape == (*np.shape(cvalues), 2):
+                container[cname] = (
+                    cdims,
+                    np.asarray(bvalues.mean(axis=-1)),
+                    cattrs,
+                )
 
     # GRIB1 depths below the land surface
     if len(ds) and _field_meta(ds[0], "edition") == 1:
@@ -1825,10 +2062,28 @@ def grib_to_flat_netcdf_spec(
     lock = _get_source_lock(ds)
     with lock:
         builder_cls = _get_dataset_builder_cls()
-        builder = builder_cls(
-            ds, profile=profile, backend_kwargs=profile_kwargs, lock=lock
-        )
-        result = builder.build()
+        try:
+            builder = builder_cls(
+                ds, profile=profile, backend_kwargs=profile_kwargs, lock=lock
+            )
+            result = builder.build()
+        except _DroppedFieldsError:
+            extra_dims = profile_kwargs.get("extra_dims") or []
+            if isinstance(extra_dims, str):
+                extra_dims = [extra_dims]
+
+            key = f"metadata.{_LAND_LAYER_KEY}"
+            if key in extra_dims or not _has_grib2_land_layers(ds):
+                raise
+
+            # GRIB2 land layers can't be told apart by the rounded
+            # level, but can by their scaled surface values
+            profile_kwargs["extra_dims"] = [*extra_dims, key]
+            builder = builder_cls(
+                ds, profile=profile, backend_kwargs=profile_kwargs, lock=lock
+            )
+            result = builder.build()
+
         del builder
 
     spec = _apply_cf_polish(
@@ -1839,6 +2094,7 @@ def grib_to_flat_netcdf_spec(
             _grid_type(ds[0]) in _MIDPOINT_BOUNDS_GRID_TYPES
         ),
     )
+    spec = _layer_dimension_to_depth(spec)
     spec = _apply_vertical_fixes(spec, ds)
     spec = _name_coordinates_after_standard_names(spec)
     return _apply_grid_mapping(spec, ds)

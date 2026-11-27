@@ -868,3 +868,112 @@ def test_grib_conflicting_step_intervals_give_no_bounds(data_dir, tmp_path):
     assert "bounds" not in spec.aux_vars["step"][2]
     assert "time_bnds" not in spec.aux_vars
     spec.close()
+
+
+def _layer(kind, value, scale):
+    prefix = f"{kind}FixedSurface"
+    return [
+        (f"typeOf{prefix}", 106),
+        (f"scaleFactorOf{prefix}", scale),
+        (f"scaledValueOf{prefix}", value),
+    ]
+
+
+@pytest.mark.parametrize("profile", ["auto", "grib"])
+def test_grib_single_soil_layer_gets_scalar_depth_with_bounds(
+    data_dir, tmp_path, profile
+):
+    """A single soil layer gets a scalar depth and its bounds."""
+    grib1 = _write_modified(
+        tmp_path,
+        data_dir / "lambert_12x10.grib1",
+        "soil1.grib",
+        [
+            [
+                ("indicatorOfTypeOfLevel", 112),
+                ("topLevel", 7),
+                ("bottomLevel", 28),
+            ]
+        ],
+    )
+    # GRIB2 depths are in metres, which eccodes rounds to integers
+    grib2 = _write_modified(
+        tmp_path,
+        data_dir / "example.grib",
+        "soil2.grib",
+        [_layer("First", 7, 2) + _layer("Second", 28, 2)],
+    )
+    for path, units, expected in ((grib1, "cm", [7, 28]), (grib2, "m", [0.07, 0.28])):
+        with grib_to_flat_netcdf_spec(str(path), profile=profile) as spec:
+            dims, value, attrs = spec.aux_vars["depth"]
+            assert dims == ()
+            assert attrs["units"] == units
+            assert attrs["axis"] == "Z"
+            bounds = spec.aux_vars[attrs["bounds"]][1]
+            np.testing.assert_allclose(bounds, expected)
+            np.testing.assert_allclose(value, np.mean(expected))
+            (vname,) = spec.data_vars
+            assert "depth" in spec.data_vars[vname][2]["coordinates"].split()
+
+
+def test_grib1_soil_layers_real_file(data_dir):
+    """Per-layer soil variables share scalar depth coordinates.
+
+    ``soil_layers.grib1`` (from cfgrib's test data) has ERA5-style
+    ``stl1``-``stl4`` and ``swvl1``-``swvl4`` variables, one per layer.
+    """
+    with grib_to_flat_netcdf_spec(str(data_dir / "soil_layers.grib1")) as spec:
+        coords = {
+            n: v[2].get("coordinates", "").split()
+            for n, v in spec.data_vars.items()
+        }
+        depths = {
+            n: spec.aux_vars[n]
+            for n in spec.aux_vars
+            if spec.aux_vars[n][2].get("standard_name") == "depth"
+        }
+        assert len(depths) == 3
+        for i, layer in enumerate(([0, 7], [7, 28], [28, 100]), 1):
+            (name,) = {c for c in coords[f"stl{i}"] if c in depths}
+            assert name in coords[f"swvl{i}"]
+            assert depths[name][2]["units"] == "cm"
+            np.testing.assert_array_equal(
+                spec.aux_vars[depths[name][2]["bounds"]][1], layer
+            )
+
+        # The bottom layer has no lower bound in the file
+        assert not {c for c in coords["stl4"] if c in depths}
+
+
+@pytest.mark.parametrize("profile", ["auto", "grib"])
+def test_grib2_gfs_soil_layers_real_file(data_dir, profile):
+    """Real NCEP GFS soil temperature on three layers.
+
+    ``gfs_soil_layers.grib2`` is a crop of the three ``TSOIL`` messages
+    (0-0.1, 0.1-0.4 and 0.4-1 m) of a GFS 1 degree analysis, with the
+    land-sea bitmap, and unaltered metadata. The layers are stored as
+    scaled values in metres, so ecCodes' integer ``level`` can't tell
+    them apart.
+    """
+    import earthkit.data as ekd
+
+    path = str(data_dir / "gfs_soil_layers.grib2")
+    with grib_to_flat_netcdf_spec(path, profile=profile) as spec:
+        dims, data, _ = spec.data_vars["st"]
+        assert dims == ("depth", "latitude", "longitude")
+        _, depth, attrs = spec.coord_vars["depth"]
+        np.testing.assert_allclose(depth, [0.05, 0.25, 0.7])
+        assert attrs["units"] == "m"
+        assert attrs["positive"] == "down"
+        np.testing.assert_allclose(
+            spec.aux_vars[attrs["bounds"]][1],
+            [[0, 0.1], [0.1, 0.4], [0.4, 1]],
+        )
+
+        fill = spec.data_vars["st"][2]["_FillValue"]
+        fields = ekd.from_source("file", path).to_fieldlist()
+        for i, field in enumerate(fields):
+            expected = np.where(
+                np.isnan(field.to_numpy()), fill, field.to_numpy()
+            )
+            np.testing.assert_array_equal(data[i], expected)
