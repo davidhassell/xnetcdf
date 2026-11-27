@@ -122,7 +122,7 @@ def earthkit_read(dataset, options):
 
         (`grfive.File`, `dict`, library)
             The opened dataset, the dataset's global attributes, and
-            the `earthkit` library itself.
+            the `earthkit.data` library itself.
 
     """
     import earthkit.data as ekd
@@ -136,7 +136,11 @@ def earthkit_read(dataset, options):
 
     if isinstance(dataset, ekd.FieldList):
         nc = File(dataset, mode="r", **kwargs)
-        library = get_library(dataset)
+        # A subclass of FieldList may be provided by another library
+        if type(dataset).__module__.startswith("earthkit.data"):
+            library = ekd
+        else:
+            library = get_library(dataset)
         # Not all field lists have a file name
         dataset_name = getattr(dataset, "path", None) or ""
         owns_accessor = False
@@ -165,14 +169,12 @@ def earthkit_read(dataset, options):
             dataset_name = "<earthkit-like>"
 
     else:
-        import earthkit
-
         dataset, dataset_name, protocol = get_dataset_name_and_protocol(
             dataset
         )
         nc = File(dataset, mode="r", **kwargs)
 
-        library = earthkit
+        library = ekd
         owns_accessor = True
 
     return {

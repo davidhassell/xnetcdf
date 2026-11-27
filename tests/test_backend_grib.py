@@ -1048,3 +1048,25 @@ def test_earthkit_options_fieldlist_with_mode(data_dir):
 
     fl = ekd.from_source("file", str(data_dir / "tuv_pl.grib")).to_fieldlist()
     assert earthkit_read(fl, {"mode": "r"})["nc"] is not None
+
+
+def test_earthkit_backend_library(data_dir):
+    """The backend library is `earthkit.data`."""
+    import xnetcdf
+
+    path = str(data_dir / "tuv_pl.grib")
+    with xnetcdf.Dataset(path, backend="earthkit") as ds:
+        assert ds.backend_library is ekd
+
+    fieldlist = ekd.from_source("file", path).to_fieldlist()
+    with xnetcdf.Dataset(fieldlist, backend="earthkit") as ds:
+        assert ds.backend_library is ekd
+
+    # A subclass from another library
+    class MyFieldList(type(fieldlist)):
+        pass
+
+    fieldlist.__class__ = MyFieldList
+    with xnetcdf.Dataset(fieldlist, backend="earthkit") as ds:
+        assert ds.backend_library is not ekd
+        assert ds.backend_library.__name__ == MyFieldList.__module__.split(".")[0]

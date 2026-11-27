@@ -1920,10 +1920,9 @@ class Dataset(Group):
             By default *backend* is `None`, which is equivalent to
             providing the ordered sequence of backends:
 
-            ``('pyfive', 'zarr' 'umfive', 'earthkit', 'netCDF4',
-            'earthkit', 'xarray')
+            ``('pyfive', 'zarr', 'umfive', 'netCDF4', 'earthkit',
+            'xarray', 'scipy', 'h5py')``
 
-            'scipy', 'h5py')``
 
             ``('pyfive', 'zarr' 'umfive', 'netCDF4',
             'scipy', 'h5py', 'xarray')``
@@ -1948,7 +1947,7 @@ class Dataset(Group):
             ``'umfive'``       `umfive`                PP, fields file
             ``'netCDF4'``      `netCDF4`               netCDF-4, netCDF-3
             ``'xarray'``       `xarray`                Kerchunk
-            ``'earthkit'``     `earthkit`              GRIB
+            ``'earthkit'``     `earthkit.data`         GRIB
             ``'scipy'``        `scipy`                 netCDF-3
             ``'h5py'``         `h5py`                  netCDF-4
             =================  ======================  ===================
