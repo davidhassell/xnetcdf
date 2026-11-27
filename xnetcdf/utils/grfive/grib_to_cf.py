@@ -481,6 +481,29 @@ class LazyTensorArray:
             shared by all arrays backed by the same GRIB source. If
             not provided, a new lock private to this array is used.
 
+    .. note:: **Thread safety.** All reads from a GRIB source are
+              serialised by one lock, shared by every array made
+              from that source (see `_get_source_lock`), so
+              concurrent reads from threads are correct but do not
+              run in parallel. This is deliberately conservative.
+              `earthkit.data` has no source-wide lock of its own: its
+              own arrays lock per variable, which does not protect
+              two variables that read from the same file. Decoding
+              in ecCodes does release the GIL (measured in November
+              2026 with ecCodes 2.50.0 and `earthkit.data` 1.3.1: with
+              one handle per thread it was 3.4x faster on 4 threads
+              than on 1, and reads through a shared earthkit field
+              were up to 3.6x faster), and 8 threads reading a
+              shared field list without a lock gave no wrong values.
+              However, that is not a guarantee, as it depends on
+              ecCodes having been built with thread support
+              (``ECCODES_THREADS``, see
+              `eccodes.codes_get_features`) and on how `earthkit.data`
+              shares file handles, which has not been audited. If
+              parallel decoding is ever wanted, the lock could be
+              narrowed or made optional, after testing against
+              `earthkit.data`'s reader internals.
+
     .. note:: The lock pickles safely (see `_PicklableLock`), but
               whether a `LazyTensorArray` as a whole can be pickled,
               such as for use with a multiprocessing or distributed
