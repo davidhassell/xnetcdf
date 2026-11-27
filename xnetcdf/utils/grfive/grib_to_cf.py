@@ -5,6 +5,58 @@ GRIB metadata, coordinates, and deferred `numpy` array views
 (`LazyTensorArray`) into a `FlatNetCDFSpec` without importing
 ``xarray`` or ``dask``.
 
+Use of ``xr_engine``
+--------------------
+
+We trust ``earthkit.data.xr_engine`` only up to a point, and use it
+for the part of the job that is hard to get right across all GRIB
+files: **dimension discovery**. Given a `FieldList` it:
+
+* splits the fields into variables;
+* decides which GRIB keys become dimensions (time, step, level,
+  ensemble member, etc.), and orders the fields to make a complete,
+  regular tensor (`FieldListTensor`);
+* converts the dimension values to coordinates, and reads the
+  horizontal coordinates from the grid;
+* offers user-configurable `Profile` objects (``extra_dims``,
+  ``variable_key``, etc.), which `earthkit_options` exposes.
+
+Everything else is ours: the CF conventions (names, attributes,
+bounds, cell methods, grid mappings, valid time, time encoding), in
+`grib_polish`, `grib_time` and `grib_grid_mapping`, and the lazy,
+thread-safe array access in `LazyTensorArray`. ``xr_engine``'s xarray
+backend (``engine.py``) is not used at all. Under the GRIB tests only
+about 1400 statements of ``xr_engine`` run, against several thousand
+lines of our own.
+
+Consequences:
+
+* We subclass ``BackendDataBuilder``, ``SingleDatasetBuilder``,
+  ``LevelPerTypeDim`` and ``EarthkitAttrsBuilder`` and override
+  ``build()`` (a copy of roughly 250 lines), ``coords()`` and
+  ``build_values()``, so a change to ``xr_engine`` internals can break
+  us even if its public API is stable. The tests pass on earthkit-data
+  1.0.0 to 1.3.1 (``builder.py`` differs by only two lines in that
+  range), but not on 0.19, where ``xr_engine`` did not exist.
+* Nearly all of our workarounds are for dimension discovery limits
+  (the soil layer retry with ``extra_dims``, the mixed level type
+  error, `_DroppedFieldsError`, dropping non-CF scalar levels), and
+  so are the places to look first if this is revisited.
+* Behaviour depends on the profile: ``profile='auto'`` effectively
+  always resolves to ``mars``, which drops levels for some soil layers
+  and tolerates variables on different single levels, whereas
+  ``grib`` keeps the levels but fails when level types or values
+  differ between variables.
+
+If replacing ``xr_engine``: keep earthkit for reading fields
+(``metadata``, ``values``, ``to_latlon``) and write our own strict
+dimension discovery (variables, a fixed set of dimension keys, a
+complete grid). Everything downstream of `LazyTensorArray` and the
+polish step should be unaffected, but the options in
+``earthkit_options['profile']`` would go. The benefit is no dependence
+on ``xr_engine`` internals; the cost is owning GRIB's edge cases that
+earthkit and cfgrib already handle.
+
 """
 
 from __future__ import annotations
