@@ -339,35 +339,28 @@ def _extract_grib_cell_method_hints(source):
     return temporal, ensemble
 
 
-def _extract_grib_interval_hints(ds):
-    """Get temporal and verticl interval bounds from GRIB fields.
-
-    Extracts forecast step and vertical layer interval bounds from
-    GRIB fields.
+def _extract_grib_step_intervals(fields):
+    """Get the forecast step intervals of GRIB fields.
 
     :Parameters:
 
-        ds: `earthkit.data.FieldList`
-            Full GRIB field list to scan for non-instantaneous step
-            intervals (``startStep``/``endStep``) and multi-level
-            layer bounds (``topLevel``/``bottomLevel``).
+        fields: iterable of `earthkit.data` fields
+            The fields of one data variable.
 
     :Returns:
 
-        (`dict`, `dict`)
-            ``(step_intervals_s, level_intervals)`` mapping end-step
-            seconds to ``(start_seconds, end_seconds)`` (or `None` if
-            fields disagree on the start) and level
-            coordinate values to ``(top_level, bottom_level)``.
+        `dict`
+            Maps each end step (in seconds) of a non-instantaneous
+            field to its ``(start_seconds, end_seconds)``, or to
+            `None` if fields with that end step disagree on the
+            start step. Empty for instantaneous variables.
 
     """
     step_intervals_s = {}
-    level_intervals = {}
-
     try:
-        fields = list(ds)
+        fields = list(fields)
     except Exception:
-        return step_intervals_s, level_intervals
+        return step_intervals_s
 
     for fld in fields:
         step_type = _field_meta(fld, "stepType")
@@ -399,6 +392,32 @@ def _extract_grib_interval_hints(ds):
                     # different steps can not share step bounds
                     step_intervals_s[e_sec] = None
 
+    return step_intervals_s
+
+
+def _extract_grib_level_intervals(ds):
+    """Get vertical layer bounds from GRIB fields.
+
+    :Parameters:
+
+        ds: `earthkit.data.FieldList`
+            Full GRIB field list to scan for multi-level layer bounds
+            (``topLevel``/``bottomLevel``).
+
+    :Returns:
+
+        `dict`
+            Maps level coordinate values to ``(top_level,
+            bottom_level)``.
+
+    """
+    level_intervals = {}
+    try:
+        fields = list(ds)
+    except Exception:
+        return level_intervals
+
+    for fld in fields:
         top_lvl = _field_meta(fld, "topLevel")
         bot_lvl = _field_meta(fld, "bottomLevel")
         lvl = _field_meta(fld, "level")
@@ -416,7 +435,7 @@ def _extract_grib_interval_hints(ds):
                 key_lvl, (float(top_lvl), float(bot_lvl))
             )
 
-    return step_intervals_s, level_intervals
+    return level_intervals
 
 
 class LazyTensorArray:
@@ -1210,7 +1229,7 @@ def _get_dataset_builder_cls():
                      Nine-element `tuple` ``(dimensions, coord_vars,
                      dedup_data_vars, dedup_aux_vars, global_attrs,
                      var_orig_dims, coord_orig_dims, raw_cell_methods,
-                     (step_intervals_s, level_intervals))`` ready for
+                     (var_step_intervals, level_intervals))`` ready for
                      `_apply_cf_polish`.
 
             """
@@ -1254,6 +1273,7 @@ def _get_dataset_builder_cls():
 
             data_vars = {}
             raw_cell_methods = {}
+            var_step_intervals = {}
             used_raw_vars = set()
             for k, vb in var_builders.items():
                 attrs = dict(vb.attrs)
@@ -1277,10 +1297,11 @@ def _get_dataset_builder_cls():
                 raw_cell_methods[vname] = _extract_grib_cell_method_hints(
                     vb.tensor.source
                 )
+                var_step_intervals[vname] = _extract_grib_step_intervals(
+                    vb.tensor.source
+                )
 
-            step_intervals_s, level_intervals = _extract_grib_interval_hints(
-                self.ds
-            )
+            level_intervals = _extract_grib_level_intervals(self.ds)
 
             dimensions = {}
             for dims, data, _ in data_vars.values():
@@ -1411,6 +1432,11 @@ def _get_dataset_builder_cls():
                             vname
                         )
 
+                    if vname in var_step_intervals:
+                        var_step_intervals[new_vname] = (
+                            var_step_intervals.pop(vname)
+                        )
+
             dedup_aux_vars = {}
             for aname, entry in raw_aux_vars.items():
                 adims = entry[0]
@@ -1435,7 +1461,7 @@ def _get_dataset_builder_cls():
                 var_orig_dims,
                 coord_orig_dims,
                 raw_cell_methods,
-                (step_intervals_s, level_intervals),
+                (var_step_intervals, level_intervals),
             )
 
     class FlatNetCDFDatasetBuilder(SingleDatasetBuilder):  # noqa :D209

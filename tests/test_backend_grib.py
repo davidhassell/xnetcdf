@@ -744,6 +744,8 @@ def test_grib1_soil_depth_units_are_cm(data_dir, tmp_path):
     )
     with grib_to_flat_netcdf_spec(str(path), profile="grib") as spec:
         assert spec.coord_vars["depth"][2]["units"] == "cm"
+        bounds = spec.aux_vars[spec.coord_vars["depth"][2]["bounds"]][1]
+        np.testing.assert_array_equal(bounds, [[0, 7], [7, 28]])
 
 
 def test_grib_single_altitude_gets_scalar_coordinate(data_dir, tmp_path):
@@ -812,20 +814,52 @@ def test_grib_valid_time_coordinate(data_dir, tmp_path):
         assert spec.data_vars[vname][2]["cell_methods"] == "time: sum"
 
 
+def test_grib_variables_with_different_step_intervals(data_dir, tmp_path):
+    """Instantaneous and accumulated variables get separate bounds."""
+    path = _write_modified(
+        tmp_path,
+        data_dir / "polar_stereographic_12x10.grib1",
+        "mixed.grib",
+        [
+            [("shortName", name), ("stepType", st), ("startStep", 0), ("endStep", e)]
+            for name, st in (("2t", "instant"), ("tp", "accum"))
+            for e in (6, 12)
+        ],
+    )
+    with grib_to_flat_netcdf_spec(str(path)) as spec:
+        coords = {n: spec.data_vars[n][2]["coordinates"].split() for n in spec.data_vars}
+        every = {**spec.coord_vars, **spec.aux_vars}
+        assert "bounds" not in every["step"][2]
+        assert "bounds" not in every["time"][2]
+        # "step" is a dimension; "step_1" is its copy with bounds
+        assert "step" in spec.data_vars["tp"][0]
+        assert "step_1" in coords["tp"]
+        assert "step_1" not in coords["2t"]
+        assert "time" in coords["2t"]
+        assert "time_1" in coords["tp"]
+        assert "time" not in coords["tp"]
+        np.testing.assert_array_equal(
+            every["step_1_bnds"][1], [[0, 6], [0, 12]]
+        )
+        assert every["time_1"][2]["bounds"] == "time_1_bnds"
+        assert spec.data_vars["tp"][2]["cell_methods"] == "time_1: sum"
+        assert "cell_methods" not in spec.data_vars["2t"][2]
+
+
 def test_grib_conflicting_step_intervals_give_no_bounds(data_dir, tmp_path):
-    """Fields ending at one step but starting at different ones."""
+    """One variable ending at one step but starting at different ones."""
     path = _write_modified(
         tmp_path,
         data_dir / "polar_stereographic_12x10.grib1",
         "conflict.grib",
         [
             [
-                ("shortName", name),
+                ("dataDate", date),
                 ("stepType", "accum"),
                 ("startStep", start),
                 ("endStep", 6),
             ]
-            for name, start in (("2t", 0), ("tp", 3))
+            for date, start in ((20200101, 0), (20200102, 3))
         ],
     )
     with pytest.warns(UserWarning, match="different start steps"):

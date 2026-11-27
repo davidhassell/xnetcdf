@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime
+import re
 import warnings
 import numpy as np
 
@@ -163,9 +164,15 @@ def _format_cell_methods(vdims, hints, coordinates=()):
 
     # "point" is the CF default, so it is not recorded
     if temporal_method and temporal_method != "point":
-        available = {*vdims, *coordinates}
+        # Names such as "time_1" are copies for other step intervals
+        available = [*vdims, *coordinates]
         t_axis = next(
-            (n for n in ("time", "valid_time", "step") if n in available),
+            (
+                a
+                for n in ("time", "valid_time", "step")
+                for a in available
+                if re.fullmatch(rf"{n}(_\d+)?", a)
+            ),
             None,
         )
         if t_axis is not None:
@@ -306,6 +313,7 @@ def _build_cell_bounds(
     aux_vars,
     interval_hints,
     horizontal_bounds=True,
+    coordinate_scopes=None,
 ):
     """Build CF bounds variables for spatial and temporal axes.
 
@@ -325,13 +333,20 @@ def _build_cell_bounds(
             Polished auxiliary coordinates.
 
         interval_hints: `tuple` of (`dict`, `dict`), optional
-            ``(step_intervals_s, level_intervals)`` extracted by
-            `_extract_grib_interval_hints`.
+            ``(var_step_intervals, level_intervals)``: for each data
+            variable name, the output of
+            `_extract_grib_step_intervals`, and the output of
+            `_extract_grib_level_intervals`.
 
         horizontal_bounds: `bool`, default True
             Whether to create bounds for the 1-d horizontal
             coordinates. Should only be True if the mid-points
             between grid points are valid cell edges.
+
+        coordinate_scopes: `dict`, optional
+            Updated in place. Maps the name of each step or time
+            coordinate that only applies to some of the data
+            variables to the `set` of their names.
 
     :Returns:
 
@@ -342,7 +357,10 @@ def _build_cell_bounds(
             variable names.
 
     """
-    step_intervals_s, level_intervals = interval_hints or ({}, {})
+    var_step_intervals, level_intervals = interval_hints or ({}, {})
+    if coordinate_scopes is None:
+        coordinate_scopes = {}
+
     new_dims = dict(dimensions)
     bnds_vars = {}
     used_names: set[str] = (
@@ -395,106 +413,135 @@ def _build_cell_bounds(
             _register_bnds(coord_vars, cname, bnds_arr)
 
     # Forecast period / time interval bounds from GRIB (startStep,
-    # endStep)
-    if step_intervals_s:
-        if "step" in coord_vars:
-            step_container = coord_vars
-        elif "step" in aux_vars:
-            step_container = aux_vars
-        else:
-            step_container = None
+    # endStep). Variables with different interval patterns (e.g.
+    # instantaneous and accumulated) can not share bounds, so each
+    # extra pattern gets its own copy of the step and time coordinates.
+    groups: dict[tuple, list[str]] = {}
+    for vname, intervals in var_step_intervals.items():
+        signature = tuple(sorted(intervals.items()))
+        groups.setdefault(signature, []).append(vname)
 
-        duration_by_step_idx: np.ndarray | None = None
-        ambiguous = False
+    if any(groups) and ("step" in coord_vars or "step" in aux_vars or any(
+        t in coord_vars or t in aux_vars for t in ("valid_time", "time")
+    )):
+        # The base coordinates serve the instantaneous variables if
+        # there are any, otherwise the first pattern
+        ordered = sorted(groups, key=lambda sig: bool(sig))
+        step_name = "step" if "step" in {*coord_vars, *aux_vars} else None
+        time_name = next(
+            (
+                t
+                for t in ("valid_time", "time")
+                if t in coord_vars or t in aux_vars
+            ),
+            None,
+        )
+        base_names = {n for n in (step_name, time_name) if n}
+        multiple = len(groups) > 1
 
-        if step_container is not None:
-            sdims, sarr, sattrs = step_container["step"]
-            s_scale = _cf_unit_scale_seconds(sattrs.get("units"))
-            if s_scale is not None and sarr.dtype.kind in _NUMERIC_DTYPE_KINDS:
-                s_flat = sarr.ravel()
-                starts = np.empty(s_flat.size, dtype=sarr.dtype)
-                ends = np.empty(s_flat.size, dtype=sarr.dtype)
-                durations = np.zeros(s_flat.size, dtype=np.float64)
-                for idx, val in enumerate(s_flat):
-                    e_sec = int(round(float(val) * s_scale))
-                    # A step with no interval (e.g. step 0 of an
-                    # accumulation) has zero length
-                    interval = step_intervals_s.get(e_sec, (e_sec, e_sec))
-                    if interval is None:
-                        ambiguous = True
-                        break
+        for i, signature in enumerate(ordered):
+            intervals = dict(signature)
+            targets = {}
+            for name in base_names:
+                if i == 0:
+                    targets[name] = name
+                else:
+                    src_container = coord_vars if name in coord_vars else aux_vars
+                    sdims, sarr, sattrs = src_container[name]
+                    copy_attrs = {
+                        k: v for k, v in sattrs.items() if k != "bounds"
+                    }
+                    copy_name = _unique_name(name, used_names)
+                    aux_vars[copy_name] = (sdims, sarr.copy(), copy_attrs)
+                    targets[name] = copy_name
 
-                    s_sec = interval[0]
-                    if sarr.dtype.kind == "f":
-                        starts[idx] = s_sec / s_scale
-                    else:
-                        starts[idx] = int(round(s_sec / s_scale))
+            if multiple:
+                for name, target in targets.items():
+                    coordinate_scopes[target] = set(groups[signature])
 
-                    ends[idx] = val
-                    durations[idx] = float(e_sec - s_sec)
-
-                if ambiguous:
-                    warnings.warn(
-                        "GRIB fields ending at the same forecast step "
-                        "have different start steps, so no step or "
-                        "time bounds are created.",
-                        stacklevel=2,
-                    )
-                elif s_flat.size:
-                    bnds_arr = np.column_stack([starts, ends]).reshape(
-                        (*sarr.shape, 2)
-                    )
-                    _register_bnds(step_container, "step", bnds_arr)
-                    duration_by_step_idx = durations.reshape(sarr.shape)
-
-        # Propagate interval durations to valid_time (or time if no
-        # step coord exists)
-        for tname in ("valid_time", "time"):
-            if ambiguous:
-                break
-
-            if tname in coord_vars:
-                tcontainer = coord_vars
-            elif tname in aux_vars:
-                tcontainer = aux_vars
-            else:
-                tcontainer = None
-
-            if tcontainer is None:
+            if not intervals:
                 continue
 
-            tdims, tarr, tattrs = tcontainer[tname]
+            def _container(name):
+                return coord_vars if name in coord_vars else aux_vars
+
+            durations = None
+            ambiguous = False
+            if step_name is not None:
+                step_target = targets[step_name]
+                container = _container(step_target)
+                sdims, sarr, sattrs = container[step_target]
+                s_scale = _cf_unit_scale_seconds(sattrs.get("units"))
+                if (
+                    s_scale is not None
+                    and sarr.dtype.kind in _NUMERIC_DTYPE_KINDS
+                    and sarr.size
+                ):
+                    s_flat = sarr.ravel()
+                    starts = np.empty(s_flat.size, dtype=sarr.dtype)
+                    dur = np.zeros(s_flat.size, dtype=np.float64)
+                    for idx, val in enumerate(s_flat):
+                        e_sec = int(round(float(val) * s_scale))
+                        # A step with no interval (e.g. step 0 of an
+                        # accumulation) has zero length
+                        interval = intervals.get(e_sec, (e_sec, e_sec))
+                        if interval is None:
+                            ambiguous = True
+                            break
+
+                        s_sec = interval[0]
+                        if sarr.dtype.kind == "f":
+                            starts[idx] = s_sec / s_scale
+                        else:
+                            starts[idx] = int(round(s_sec / s_scale))
+
+                        dur[idx] = float(e_sec - s_sec)
+
+                    if ambiguous:
+                        warnings.warn(
+                            "GRIB fields ending at the same forecast "
+                            "step have different start steps, so no "
+                            "step or time bounds are created.",
+                            stacklevel=2,
+                        )
+                    else:
+                        bnds_arr = np.column_stack([starts, s_flat]).reshape(
+                            (*sarr.shape, 2)
+                        )
+                        _register_bnds(container, step_target, bnds_arr)
+                        durations = dur.reshape(sarr.shape)
+
+            if ambiguous or time_name is None:
+                continue
+
+            # Propagate interval durations to the time coordinate
+            time_target = targets[time_name]
+            tcontainer = _container(time_target)
+            tdims, tarr, tattrs = tcontainer[time_target]
             t_scale = _cf_unit_scale_seconds(tattrs.get("units"))
             if t_scale is None or tarr.dtype.kind not in _NUMERIC_DTYPE_KINDS:
                 continue
 
-            if duration_by_step_idx is not None and step_container is not None:
-                sdims = step_container["step"][0]
+            if durations is not None:
+                sdims = _container(targets[step_name])[targets[step_name]][0]
                 # The step dimensions must appear in order in the
                 # time dimensions, which may include others (e.g. the
                 # forecast reference time)
                 it = iter(tdims)
                 if all(d in it for d in sdims):
                     shape = [
-                        dimensions[d] if d in sdims else 1 for d in tdims
+                        new_dims[d] if d in sdims else 1 for d in tdims
                     ]
-                    dur = duration_by_step_idx.reshape(shape) / t_scale
+                    dur_t = durations.reshape(shape) / t_scale
                     t_bnds = np.stack(
-                        [tarr - dur, tarr + np.zeros_like(dur)], axis=-1
+                        [tarr - dur_t, tarr + np.zeros_like(dur_t)], axis=-1
                     )
-                    _register_bnds(tcontainer, tname, t_bnds)
-                    break
-
-            elif len(step_intervals_s) == 1:
-                interval = next(iter(step_intervals_s.values()))
-                if interval is None:
-                    continue
-
-                s_sec, e_sec = interval
-                dur_in_t_units = float(e_sec - s_sec) / t_scale
-                t_bnds = np.stack([tarr - dur_in_t_units, tarr], axis=-1)
-                _register_bnds(tcontainer, tname, t_bnds)
-                break
+                    _register_bnds(tcontainer, time_target, t_bnds)
+            elif len(intervals) == 1 and None not in intervals.values():
+                s_sec, e_sec = next(iter(intervals.values()))
+                dur_t = float(e_sec - s_sec) / t_scale
+                t_bnds = np.stack([tarr - dur_t, tarr], axis=-1)
+                _register_bnds(tcontainer, time_target, t_bnds)
 
     # Layer-type vertical coordinates (e.g. soil layers with topLevel
     # != bottomLevel)
@@ -768,12 +815,14 @@ def _apply_cf_polish(
 
     _add_valid_time(polished_coord_vars, polished_aux_vars)
 
+    coordinate_scopes: dict[str, set] = {}
     polished_dimensions, bnds_vars, bnds_names = _build_cell_bounds(
         dimensions,
         polished_coord_vars,
         polished_aux_vars,
         interval_hints,
         horizontal_bounds=horizontal_bounds,
+        coordinate_scopes=coordinate_scopes,
     )
     polished_aux_vars.update(bnds_vars)
 
@@ -789,6 +838,7 @@ def _apply_cf_polish(
             aname
             for aname, (adims, _, _) in polished_aux_vars.items()
             if aname not in bnds_names
+            and vname in coordinate_scopes.get(aname, {vname})
             and set(adims).issubset(vdim_set)
             and (
                 coord_orig_dims.get(aname, set()).issubset(v_orig)
