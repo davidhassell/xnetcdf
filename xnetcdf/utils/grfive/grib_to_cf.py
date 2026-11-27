@@ -1074,9 +1074,10 @@ def _get_dataset_builder_cls():
                     f"{n_expected}, so fields would be silently dropped. "
                     "The profile in use does not expose all the "
                     "distinguishing keys (e.g. the level for layer or "
-                    "non-MARS level types). Try profile='grib', or add "
-                    "the distinguishing keys to "
-                    "profile_kwargs['extra_dims']."
+                    "non-MARS level types). Try "
+                    "earthkit_options={'profile': 'grib'}, or add the "
+                    "distinguishing keys with "
+                    "earthkit_options={'profile': {'extra_dims': [...]}}."
                 )
 
             fill_value = _default_fill_value(self.dtype)
@@ -2126,7 +2127,7 @@ def grib_to_flat_netcdf_spec(
             raise ValueError(
                 f"{error}\n\nThe file mixes level types (e.g. surface "
                 f"and soil layers), which profile={profile!r} can't "
-                "combine. Try profile='auto', or read the level types "
+                "combine. Try earthkit_options={'profile': 'auto'}, or read the level types "
                 "separately."
             ) from error
 
