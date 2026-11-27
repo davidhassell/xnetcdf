@@ -19,8 +19,8 @@ tried. To skip the other backends, use ``backend='earthkit'``:
    >>> nc = xnetcdf.Dataset("era5.grib", backend="earthkit")
    >>> nc['t']
 
-The CF metadata
----------------
+CF metadata
+-----------
 
 The coordinates, bounds, cell methods, grid mappings, valid time and
 time encoding are created by `xnetcdf`, from the GRIB metadata, so
@@ -54,9 +54,9 @@ Using ``grfive`` directly
 -------------------------
 
 The conversion of GRIB to a netCDF-4 like view is provided by the
-``xnetcdf.grfive`` package, whose `xnetcdf.grfive.File` has the same
-read-only API as `pyfive.File` and `umfive.File`. It can be used on
-its own, without `xnetcdf.Dataset`:
+``xnetcdf.grfive`` package (which calls `earthkit.data`), whose
+`xnetcdf.grfive.File` has the same read-only API as `pyfive.File` and
+`umfive.File`. It can be used on its own, without `xnetcdf.Dataset`:
 
 .. code-block:: python
 
@@ -68,6 +68,8 @@ Limitations
 
 * GRIB1 is supported on a best-effort basis, since it has less
   metadata to build CF from.
+
+* Unstructured grids are not yet supported.
 
 * Reduced Gaussian grids are not yet supported, because they await
   CF-1.14.

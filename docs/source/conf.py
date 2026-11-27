@@ -6,8 +6,6 @@
 import os
 import sys
 
-import xnetcdf
-
 sys.path.insert(0, os.path.abspath("../../src"))
 
 # -- Project information -----------------------------------------------------
@@ -16,7 +14,7 @@ sys.path.insert(0, os.path.abspath("../../src"))
 project = "xnetcdf"
 copyright = "2026, xnetcdf Development Team"
 author = "xnetcdf Development Team"
-version = xnetcdf.__version__
+version = "0.4.0"
 release = version
 
 # -- General configuration ---------------------------------------------------
