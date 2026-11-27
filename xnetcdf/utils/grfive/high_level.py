@@ -141,7 +141,6 @@ class File(Mapping):
         self.options = options
 
         d = grib_to_flat_netcdf_spec(filename, **options)
-        self._spec = d
 
         if verbose > 0 or verbose == -1:
             import pprint
@@ -283,16 +282,17 @@ class File(Mapping):
     def close(self):
         """Close the dataset.
 
-        The data of the data variables are released, so they can't be
-        read once the dataset is closed. This does not close any
-        underlying GRIB file, because that is managed by `earthkit`.
+        This is currently a no-op, provided for compatibility with the
+        `pyfive` API. The dataset holds no file handle of its own: any
+        open GRIB file is managed (and cached) by `earthkit`, and is
+        not released by this method.
 
         :Returns:
 
             `None`
 
         """
-        self._spec.close()
+        pass
 
     def items(self):
         """A set-like object providing a view on the dataset's items."""
