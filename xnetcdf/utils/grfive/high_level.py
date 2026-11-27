@@ -47,8 +47,10 @@ class File(Mapping):
              The `earthkit.data` ``xr_engine`` profile name or object
              (e.g. ``'auto'``, ``'grib'``, ``'mars'``, or
              ``'earthkit'``). When ``'auto'`` (the default), selects
-             ``'mars'`` if MARS namespace metadata is present on the
-             first field and ``'grib'`` otherwise.
+             ``'mars'`` if MARS keys (``mars.class`` or ``levtype``)
+             can be read from the first field, which is almost always
+             the case, even for files not made with MARS, and
+             ``'grib'`` otherwise.
 
          calendar : str, default "proleptic_gregorian"
              CF calendar name used when encoding datetime coordinates

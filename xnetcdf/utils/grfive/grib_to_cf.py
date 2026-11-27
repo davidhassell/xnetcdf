@@ -890,60 +890,27 @@ def _resolve_profile(ds, profile):
     :Returns:
 
         `str` or `Profile`
-            Resolved profile name (``'mars'`` if MARS namespace
-            metadata is detected, ``'grib'`` otherwise) or the
+            Resolved profile name (``'mars'`` if MARS keys can be read
+            from the first field, ``'grib'`` otherwise) or the
             original *profile* value if not ``'auto'``.
 
     """
     if not isinstance(profile, str) or profile != "auto":
         return profile
 
-    from earthkit.data.xr_engine import profile as ek_profile
+    # The MARS profile also suits non-MARS files: it copes with
+    # variables on different single levels, which the "grib" profile
+    # does not.
+    try:
+        field = ds[0]
+        if (
+            _field_meta(field, "mars.class") is not None
+            or _field_meta(field, "levtype") is not None
+        ):
+            return "mars"
 
-    for fn_name in ("auto_profile", "guess_profile", "resolve_profile"):
-        fn = getattr(ek_profile, fn_name, None)
-        if callable(fn):
-            try:
-                resolved = fn(ds)
-                if resolved and resolved != "auto":
-                    return resolved
-
-            except Exception:
-                pass
-
-    profile_cls = getattr(ek_profile, "Profile", None)
-    if profile_cls is not None:
-        for meth_name in ("auto", "guess", "from_ds", "from_fieldlist"):
-            meth = getattr(profile_cls, meth_name, None)
-            if callable(meth):
-                try:
-                    resolved = meth(ds)
-                    if resolved and resolved != "auto":
-                        return resolved
-
-                except Exception:
-                    pass
-
-    profiles_dir = os.path.join(
-        os.path.dirname(ek_profile.__file__), "profiles"
-    )
-    if os.path.exists(os.path.join(profiles_dir, "mars.yaml")):
-        try:
-            if len(ds) > 0:
-                fld = ds[0]
-                if callable(getattr(fld, "as_namespace", None)):
-                    mars_meta = fld.as_namespace("mars")
-                    if mars_meta:
-                        return "mars"
-
-                if (
-                    _field_meta(fld, "mars.class") is not None
-                    or _field_meta(fld, "levtype") is not None
-                ):
-                    return "mars"
-
-        except Exception:
-            pass
+    except Exception:
+        pass
 
     return "grib"
 
@@ -1653,6 +1620,49 @@ def _layer_bounds(field):
     return tuple(sorted(float(x) for x in layer))
 
 
+def _drop_non_cf_scalar_levels(spec):
+    """Remove scalar level coordinates that are not CF coordinates.
+
+    `earthkit` makes a scalar ``level`` coordinate for fields on named
+    surfaces (e.g. the earth's surface or the tropopause), whose value
+    is meaningless and whose standard name is missing or invalid. CF
+    encodes such surfaces in the standard name of the data, so the
+    coordinates, and their bounds, are removed.
+
+    :Parameters:
+
+        spec: `FlatNetCDFSpec`
+            Modified in place.
+
+    :Returns:
+
+        `FlatNetCDFSpec`
+            The modified *spec*.
+
+    """
+    drop = {
+        name
+        for name, (dims, _, attrs) in spec.aux_vars.items()
+        if dims == ()
+        and "level_type" in attrs
+        and attrs.get("standard_name") in (None, "surface")
+    }
+    for name in tuple(drop):
+        drop.add(spec.aux_vars[name][2].get("bounds"))
+
+    drop.discard(None)
+    for _, _, attrs in spec.data_vars.values():
+        if "coordinates" in attrs:
+            attrs["coordinates"] = " ".join(
+                c for c in attrs["coordinates"].split() if c not in drop
+            )
+
+    for name in drop:
+        spec.aux_vars.pop(name, None)
+
+    return spec
+
+
 def _drop_rounded_scalar_depth(spec, vdims, attrs, tensor):
     """Remove `earthkit`'s scalar depth of a GRIB2 land layer.
 
@@ -1741,6 +1751,7 @@ def _apply_vertical_fixes(spec, ds):
             The modified *spec*.
 
     """
+    spec = _drop_non_cf_scalar_levels(spec)
     used = set(spec.dimensions) | set(spec.coord_vars) | set(spec.aux_vars)
     used |= set(spec.data_vars)
     all_coords = {**spec.coord_vars, **spec.aux_vars}
@@ -1955,8 +1966,10 @@ def grib_to_flat_netcdf_spec(
              The `earthkit.data` ``xr_engine`` profile name or object
              (e.g. ``'auto'``, ``'grib'``, ``'mars'``, or
              ``'earthkit'``). When ``'auto'`` (the default), selects
-             ``'mars'`` if MARS namespace metadata is present on the
-             first field and ``'grib'`` otherwise.
+             ``'mars'`` if MARS keys (``mars.class`` or ``levtype``)
+             can be read from the first field, which is almost always
+             the case, even for files not made with MARS, and
+             ``'grib'`` otherwise.
 
         calendar: `str`, default "proleptic_gregorian"
             CF calendar name used when encoding datetime coordinates
@@ -2083,6 +2096,16 @@ def grib_to_flat_netcdf_spec(
                 ds, profile=profile, backend_kwargs=profile_kwargs, lock=lock
             )
             result = builder.build()
+        except ValueError as error:
+            if "metadata.typeOfLevel" not in str(error):
+                raise
+
+            raise ValueError(
+                f"{error}\n\nThe file mixes level types (e.g. surface "
+                f"and soil layers), which profile={profile!r} can't "
+                "combine. Try profile='auto', or read the level types "
+                "separately."
+            ) from error
 
         del builder
 

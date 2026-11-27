@@ -977,3 +977,20 @@ def test_grib2_gfs_soil_layers_real_file(data_dir, profile):
                 np.isnan(field.to_numpy()), fill, field.to_numpy()
             )
             np.testing.assert_array_equal(data[i], expected)
+
+
+def test_grib_mixed_level_types_error_is_explained(data_dir):
+    """The ``grib`` profile can't mix surface and soil-layer variables."""
+    path = str(data_dir / "soil_layers.grib1")
+    with pytest.raises(ValueError, match="mixes level types"):
+        grib_to_flat_netcdf_spec(path, profile="grib")
+
+
+def test_grib_profile_has_no_scalar_level_for_named_surface(data_dir):
+    """The earth's surface is not a CF vertical coordinate."""
+    path = str(data_dir / "lsm.N128.grib")
+    with grib_to_flat_netcdf_spec(path, profile="grib") as spec:
+        assert "level" not in spec.aux_vars
+        assert "level" not in spec.coord_vars
+        for _, _, attrs in spec.data_vars.values():
+            assert "level" not in attrs["coordinates"].split()
