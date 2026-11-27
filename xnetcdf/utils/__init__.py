@@ -22,4 +22,8 @@ from .utils_xarray import (
     xarray_read,
     xarray_undecode_cf,
 )
-from .utils_zarr import zarr_parse_group_structure, zarr_read
+from .utils_zarr import (
+    zarr_parse_group_structure,
+    zarr_parse_options,
+    zarr_read,
+)

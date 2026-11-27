@@ -104,10 +104,10 @@ def scipy_read(dataset, options):
         mode = options.pop("mode", "r")
         mmap = options.pop("mmap", True)
         if mode != "r":
-            raise ValueError(f"Can't set mode={mode!r} in netcdf_file_options")
+            raise ValueError(f"Can't set mode={mode!r} in scipy_options")
 
         if not mmap:
-            raise ValueError("Can't set mmap=False in netcdf_file_options")
+            raise ValueError("Can't set mmap=False in scipy_options")
 
         dataset, dataset_name, protocol = get_dataset_name_and_protocol(
             dataset

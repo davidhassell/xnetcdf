@@ -8,7 +8,7 @@ _SECTIONS = ("from_source", "profile", "mapping")
 _MAPPING_KEYS = ("calendar", "decreasing_atmos_pressure", "squeeze")
 
 
-def parse_earthkit_options(options):
+def earthkit_parse_options(options):
     """Parse the ``earthkit_options`` into keywords for `grfive.File`.
 
     The options are in separate sections, so that the keywords of
@@ -116,7 +116,7 @@ def earthkit_read(dataset, options):
 
         options: `dict`
             The ``earthkit_options`` of `xnetcdf.Dataset`, in the
-            sections described by `parse_earthkit_options`.
+            sections described by `earthkit_parse_options`.
 
     :Returns:
 
@@ -129,7 +129,7 @@ def earthkit_read(dataset, options):
 
     from .grfive import File
 
-    kwargs = parse_earthkit_options(options)
+    kwargs = earthkit_parse_options(options)
 
     dataset_name = ""
     protocol = -1

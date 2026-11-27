@@ -998,14 +998,14 @@ def test_grib_profile_has_no_scalar_level_for_named_surface(data_dir):
 
 def test_earthkit_options_sections(data_dir):
     """The sectioned ``earthkit_options`` are parsed strictly."""
-    from xnetcdf.utils.utils_earthkit import parse_earthkit_options
+    from xnetcdf.utils.utils_earthkit import earthkit_parse_options
 
     options = {
         "from_source": {"name": "file", "x": 1},
         "profile": {"name": "grib", "extra_dims": ["step"]},
         "mapping": {"calendar": "365_day", "squeeze": False},
     }
-    assert parse_earthkit_options(options) == {
+    assert earthkit_parse_options(options) == {
         "source_type": "file",
         "source_kwargs": {"x": 1},
         "profile": "grib",
@@ -1017,7 +1017,7 @@ def test_earthkit_options_sections(data_dir):
     assert options["from_source"] == {"name": "file", "x": 1}
     assert options["profile"]["name"] == "grib"
 
-    assert parse_earthkit_options({"profile": "mars"})["profile"] == "mars"
+    assert earthkit_parse_options({"profile": "mars"})["profile"] == "mars"
 
     for bad in (
         {"calendar": "365_day"},
@@ -1027,7 +1027,7 @@ def test_earthkit_options_sections(data_dir):
         {"mapping": "365_day"},
     ):
         with pytest.raises((ValueError, TypeError)):
-            parse_earthkit_options(bad)
+            earthkit_parse_options(bad)
 
     import xnetcdf
 

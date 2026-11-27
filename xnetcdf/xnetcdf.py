@@ -1,3 +1,4 @@
+import warnings
 from collections.abc import Mapping
 from itertools import chain
 from math import prod
@@ -24,6 +25,7 @@ from .utils import (
     xarray_parse_group_structure,
     xarray_read,
     zarr_parse_group_structure,
+    zarr_parse_options,
     zarr_read,
 )
 
@@ -2059,7 +2061,9 @@ class Dataset(Group):
             argument can not be provided.
 
         netcdf_file_options: `dict` or `None`, optional
-            Deprecated at version 0.4.0. Use *scipy_options* instead.
+            Deprecated at version 0.4.0. Use *scipy_options*
+            instead. If set, then a warning is issued and the value
+            is recast to *scipy_options*. It is an error to set both.
 
         h5py_options: `dict` or `None`, optional
             Keyword arguments that are passed to `h5py.File` when
@@ -2088,26 +2092,48 @@ class Dataset(Group):
             argument can not be provided.
 
         zarr_options: `dict` or `None`, optional
-            Keyword arguments that are passed to `zarr.open` when
-            opening a dataset with the ``'zarr'`` backend. Setting to
-            `None` (the default) is equivalent to providing an empty
-            dictionary. The keyword argument ``mode='r'`` is always
-            automatically applied, even when not provided, and can't
-            be set to a different value. The ``store`` argument can
-            not be provided.
+            Options that are used when opening a dataset with the
+            ``'zarr'`` backend. Setting to `None` (the default) is
+            equivalent to providing an empty dictionary. The options
+            are in separate sections, so that the keywords of the
+            different libraries can not clash. Any unknown key raises
+            an exception. The provided dictionaries are not modified.
 
-        zarr_dimension_search: `str`, optional
-            How to interpret a Zarr or Kerchunk dataset dimension name
-            that contains no group-separator characters, such as
-            ``dim`` (as opposed to ``group/dim``, ``/group/dim``,
-            ``../dim``, etc.). Ignored for other dataset types.
+            * ``'open'``: Keyword arguments that are passed to
+              `zarr.open`. The keyword argument ``mode='r'`` is always
+              automatically applied, even when not provided, and can't
+              be set to a different value. The ``store`` argument can
+              not be provided.
 
-            For a Zarr or Kerchunk dataset, setting this parameter may
-            be necessary for the correct interpretation of the dataset
-            in the event that its dimensions are named inconsistently
-            with CF conventions (section 2.7 Groups).
+            * ``'mapping'``: Options for the interpretation of the
+              dataset. ``'dimension_search'`` is how to interpret a
+              Zarr or Kerchunk dataset dimension name that contains no
+              group-separator characters, such as ``dim`` (as opposed
+              to ``group/dim``, ``/group/dim``, ``../dim``,
+              etc.). Ignored for other dataset types.
 
-            The *zarr_dimension_search* parameter must be one of:
+              For a Zarr or Kerchunk dataset, setting this may be
+              necessary for the correct interpretation of the dataset
+              in the event that its dimensions are named
+              inconsistently with CF conventions (section 2.7
+              Groups). It must be one of ``'closest_ancestor'`` (the
+              default), ``'furthest_ancestor'`` or ``'local'``,
+              which are described under *zarr_dimension_search*.
+
+            For example: ``{'open': {'storage_options': {'anon':
+            True}}, 'mapping': {'dimension_search': 'local'}}``
+
+            .. note:: Providing a flat dictionary of `zarr.open`
+                      keywords is deprecated, and is recast to
+                      ``{'open': options}`` with a warning.
+
+        zarr_dimension_search: `str` or `None`, optional
+            Deprecated. Use ``zarr_options={'mapping':
+            {'dimension_search': ...}}`` instead. If set, then a
+            warning is issued and the value is recast to the new
+            form. It is an error to set both.
+
+            The possible values of ``dimension_search`` are:
 
             * ``'closest_ancestor'``
 
@@ -2163,15 +2189,32 @@ class Dataset(Group):
         netCDF4_options=None,
         xarray_options=None,
         zarr_options=None,
-        zarr_dimension_search="closest_ancestor",
+        zarr_dimension_search=None,
         verbose=0,
         netcdf_file_options=None,
     ):
+        if netcdf_file_options is not None:
+            warnings.warn(
+                "netcdf_file_options was deprecated at version 0.4.0. "
+                "Use scipy_options instead",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            if scipy_options is not None:
+                raise ValueError(
+                    "Can't set both netcdf_file_options and scipy_options"
+                )
+
+            scipy_options = netcdf_file_options
+
         # Options for the different backend read functions
         read_options = {}
         if pyfive_options:
             read_options["pyfive"] = pyfive_options
 
+        zarr_options, zarr_dimension_search = zarr_parse_options(
+            zarr_options, zarr_dimension_search
+        )
         if zarr_options:
             read_options["zarr"] = zarr_options
 
@@ -2192,12 +2235,6 @@ class Dataset(Group):
 
         if h5py_options:
             read_options["h5py"] = h5py_options
-
-        if netcdf_file_options is not None:
-            raise ValueError(
-                "netcdf_file_options was deprecated at version 0.4.0. "
-                "Use scipy_options instead"
-            )                
 
         self._zarr_dimension_search = zarr_dimension_search
 

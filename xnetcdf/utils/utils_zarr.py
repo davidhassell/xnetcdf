@@ -1,10 +1,107 @@
 """Utilities for the `zarr` backend."""
 
+import warnings
+from collections.abc import Mapping
+
 from .utils_general import (
     NetCDFError,
     get_dataset_name_and_protocol,
     get_library,
 )
+
+
+_ZARR_SECTIONS = ("open", "mapping")
+_ZARR_MAPPING_KEYS = ("dimension_search",)
+_DEFAULT_DIMENSION_SEARCH = "closest_ancestor"
+
+
+def zarr_parse_options(options, dimension_search=None):
+    """Parse the ``zarr_options`` of `xnetcdf.Dataset`.
+
+    The options are in separate sections, so that the keywords of
+    `zarr.open` and of the CF mapping can not clash. The input is never
+    modified.
+
+    The deprecated forms are recast, with a warning: the
+    *dimension_search* parameter (previously the ``zarr_dimension_search``
+    parameter of `xnetcdf.Dataset`), and a flat dictionary of
+    `zarr.open` keywords.
+
+    :Parameters:
+
+        options: `dict` or `None`
+            The ``zarr_options``, with any of the sections ``'open'``
+            and ``'mapping'``. See `xnetcdf.Dataset`.
+
+        dimension_search: `str` or `None`
+            The deprecated ``zarr_dimension_search``, or `None` if it
+            was not provided.
+
+    :Returns:
+
+        (`dict`, `str`)
+            The keyword arguments for `zarr.open`, and the dimension
+            search strategy.
+
+    """
+    options = dict(options or {})
+
+    if options and not set(options).intersection(_ZARR_SECTIONS):
+        warnings.warn(
+            "A flat dictionary of zarr.open keywords in zarr_options "
+            "is deprecated. Use zarr_options={'open': {...}} instead",
+            DeprecationWarning,
+            stacklevel=3,
+        )
+        options = {"open": options}
+
+    unknown = sorted(set(options).difference(_ZARR_SECTIONS), key=str)
+    if unknown:
+        raise ValueError(
+            f"Invalid zarr_options key(s) {unknown}. Valid keys are "
+            f"{_ZARR_SECTIONS}"
+        )
+
+    sections = {}
+    for name in _ZARR_SECTIONS:
+        section = options.get(name)
+        if section is None:
+            section = {}
+        elif not isinstance(section, Mapping):
+            raise TypeError(
+                f"zarr_options[{name!r}] must be a dictionary. "
+                f"Got {section!r}"
+            )
+
+        sections[name] = dict(section)
+
+    mapping = sections["mapping"]
+    unknown = sorted(set(mapping).difference(_ZARR_MAPPING_KEYS))
+    if unknown:
+        raise ValueError(
+            f"Invalid zarr_options['mapping'] key(s) {unknown}. "
+            f"Valid keys are {_ZARR_MAPPING_KEYS}"
+        )
+
+    if dimension_search is not None:
+        warnings.warn(
+            "The zarr_dimension_search parameter is deprecated. Use "
+            "zarr_options={'mapping': {'dimension_search': ...}} instead",
+            DeprecationWarning,
+            stacklevel=3,
+        )
+        if "dimension_search" in mapping:
+            raise ValueError(
+                "Can't set both zarr_dimension_search and "
+                "zarr_options['mapping']['dimension_search']"
+            )
+
+        mapping["dimension_search"] = dimension_search
+
+    return (
+        sections["open"],
+        mapping.get("dimension_search", _DEFAULT_DIMENSION_SEARCH),
+    )
 
 
 def zarr_get_dataset_name(z):

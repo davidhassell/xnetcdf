@@ -1255,12 +1255,65 @@ def test_xnetcdf_Group_is_ancestor_group(data_dir):
 
 
 def test_xnetcdf_zarr_dimension_search(data_dir):
-    """Test zarr_dimension_search parameter."""
+    """Test the dimension_search zarr option."""
     dataset = data_dir / "test.zarr3"
     # Test different search strategies
     for strategy in ["closest_ancestor", "furthest_ancestor", "local"]:
-        with xnetcdf.Dataset(dataset, zarr_dimension_search=strategy) as p:
+        options = {"mapping": {"dimension_search": strategy}}
+        with xnetcdf.Dataset(dataset, zarr_options=options) as p:
             assert p.backend_api == "zarr"
+            assert p._zarr_dimension_search == strategy
+
+        # The input is not modified
+        assert options == {"mapping": {"dimension_search": strategy}}
+
+    with xnetcdf.Dataset(dataset) as p:
+        assert p._zarr_dimension_search == "closest_ancestor"
+
+    with pytest.raises(ValueError, match="Invalid zarr_options"):
+        xnetcdf.Dataset(dataset, zarr_options={"mapping": {"x": "local"}})
+
+
+def test_xnetcdf_zarr_deprecated_options(data_dir):
+    """Test the deprecated zarr options are recast, with a warning."""
+    dataset = data_dir / "test.zarr3"
+    with pytest.warns(DeprecationWarning, match="zarr_dimension_search"):
+        with xnetcdf.Dataset(dataset, zarr_dimension_search="local") as p:
+            assert p._zarr_dimension_search == "local"
+
+    # A flat dictionary of zarr.open keywords
+    with pytest.warns(DeprecationWarning, match="flat dictionary"):
+        with xnetcdf.Dataset(
+            dataset, zarr_options={"zarr_format": 3}
+        ) as p:
+            assert p.backend_api == "zarr"
+
+    with pytest.warns(DeprecationWarning):
+        with pytest.raises(ValueError, match="Can't set both"):
+            xnetcdf.Dataset(
+                dataset,
+                zarr_dimension_search="local",
+                zarr_options={"mapping": {"dimension_search": "local"}},
+            )
+
+
+def test_xnetcdf_netcdf_file_options_deprecated(data_dir):
+    """Test netcdf_file_options is recast to scipy_options."""
+    dataset = data_dir / "test1.nc3"
+    with pytest.warns(DeprecationWarning, match="scipy_options"):
+        with xnetcdf.Dataset(
+            dataset, backend="scipy", netcdf_file_options={"version": 1}
+        ) as p:
+            assert p.backend_api == "scipy"
+
+    with pytest.raises(ValueError, match="Can't set both"):
+        with pytest.warns(DeprecationWarning):
+            xnetcdf.Dataset(
+                dataset,
+                backend="scipy",
+                netcdf_file_options={},
+                scipy_options={},
+            )
 
 
 def test_xnetcdf_Group_getncattr(data_dir):
